@@ -216,6 +216,21 @@ export function IntakeModal({
     }
   }, [open, isFirstRun, initialAutoScheduleEnabled, initialAutoScheduleMinutes]);
 
+  const resumeTrackOptions = useMemo(() => {
+    const merged = [...roleTypes, ...DEFAULT_RESUME_ROLE_TYPES];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const r of merged) {
+      const clean = r.trim();
+      if (!clean) continue;
+      if (!seen.has(clean.toLowerCase())) {
+        seen.add(clean.toLowerCase());
+        out.push(clean);
+      }
+    }
+    return out;
+  }, [roleTypes]);
+
   if (!open) return null;
 
   const toggleItem = <T extends string>(
@@ -288,21 +303,6 @@ export function IntakeModal({
   const selectedCadence =
     DASHBOARD_CADENCE_OPTIONS.find((opt) => opt.id === cadenceChoiceId) ??
     DASHBOARD_CADENCE_OPTIONS[1];
-
-  const resumeTrackOptions = useMemo(() => {
-    const merged = [...roleTypes, ...DEFAULT_RESUME_ROLE_TYPES];
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const r of merged) {
-      const clean = r.trim();
-      if (!clean) continue;
-      if (!seen.has(clean.toLowerCase())) {
-        seen.add(clean.toLowerCase());
-        out.push(clean);
-      }
-    }
-    return out;
-  }, [roleTypes]);
 
   const handleIntakeResumeFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
