@@ -269,15 +269,22 @@ export async function scanGmailForJobs(input: GmailScanInput): Promise<GmailScan
     }
 
     let friendlyMessage =
-      'Gmail session expired or missing permission. Please click Connect Gmail again.';
+      'Gmail session expired or missing permission. Please click Sign in with Google again.';
     if (
+      /accessNotConfigured|has not been used|disabled/i.test(
+        `${googleReason} ${googleMsg}`
+      )
+    ) {
+      friendlyMessage = googleMsg
+        ? `The Gmail API is not enabled yet on your Google Cloud project. ${googleMsg}`
+        : 'The Gmail API is not enabled on the Google Cloud project yet. Enable "Gmail API" in Google Cloud Console for your project, then reconnect.';
+    } else if (
       /insufficient|scope|PERMISSION_DENIED/i.test(`${googleReason} ${googleMsg}`)
     ) {
       friendlyMessage =
-        'Google Sign-In succeeded, but Gmail read permission was not granted. Click Connect Gmail again and make sure the "View your email messages" checkbox is checked on the Google consent screen.';
-    } else if (/accessNotConfigured|has not been used|disabled/i.test(`${googleReason} ${googleMsg}`)) {
-      friendlyMessage =
-        'The Gmail API is not enabled on the Google Cloud project yet. Enable "Gmail API" in Google Cloud Console for your project, then reconnect.';
+        'Google Sign-In succeeded, but Gmail read permission was not granted. Click Sign in with Google again and make sure the "View your email messages" checkbox is checked on the Google consent screen.';
+    } else if (googleMsg) {
+      friendlyMessage = `Gmail authorization error: ${googleMsg}`;
     }
 
     const err = new Error(friendlyMessage) as Error & { status?: number };

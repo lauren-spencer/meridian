@@ -378,12 +378,33 @@ export function SourcesView({
           </div>
         </div>
 
-        {gmailError && (
-          <div className="p-3 bg-red-50 border border-red-200 rounded-md flex items-start gap-2 text-xs text-red-700">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <span>{gmailError}</span>
-          </div>
-        )}
+        {gmailError && (() => {
+          const urlMatch = gmailError.match(/https:\/\/[^\s)]+/i);
+          const consoleUrl =
+            urlMatch?.[0]?.replace(/[.,;]+$/, '') ??
+            (/not enabled|gmail api/i.test(gmailError)
+              ? 'https://console.cloud.google.com/apis/library/gmail.googleapis.com?project=gen-lang-client-0276107744'
+              : null);
+          return (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-md flex items-start gap-2 text-xs text-red-700">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <div className="space-y-1.5 min-w-0">
+                <p className="break-words leading-relaxed">{gmailError}</p>
+                {consoleUrl && (
+                  <a
+                    href={consoleUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 font-semibold text-red-800 underline hover:text-red-950"
+                  >
+                    <span>Open Gmail API in Google Cloud Console</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Editable Gmail Senders Section (Always accessible!) */}
         <div className="pt-3.5 border-t border-zinc-100 space-y-3">
