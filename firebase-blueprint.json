@@ -1,0 +1,602 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user account profile, intake job search criteria, and workspace settings stored per Firebase UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "onboardingCompleted": {
+          "type": "boolean"
+        },
+        "roleTypes": {
+          "type": "array",
+          "description": "Target role titles/categories (max 20)."
+        },
+        "locations": {
+          "type": "array",
+          "description": "Preferred cities/regions (max 20)."
+        },
+        "workModes": {
+          "type": "array",
+          "description": "Preferred work modes: Remote, Hybrid, Onsite (max 5)."
+        },
+        "keywords": {
+          "type": "array",
+          "description": "Target skills, industries, or keywords (max 30)."
+        },
+        "employmentTypes": {
+          "type": "array",
+          "description": "Target employment types: Full-time, Internship, Contract, Part-time (max 6)."
+        },
+        "searchPrompt": {
+          "type": "string",
+          "maxLength": 3000
+        },
+        "gmailQuery": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "gmailSenders": {
+          "type": "array",
+          "description": "Email addresses or domains that send job updates (max 30)."
+        },
+        "slackChannels": {
+          "type": "array",
+          "description": "Slack channel names monitored for job posts (max 20)."
+        },
+        "whatsappGroups": {
+          "type": "array",
+          "description": "WhatsApp group/chat labels monitored for job posts (max 20)."
+        },
+        "autoScheduleEnabled": {
+          "type": "boolean"
+        },
+        "autoScheduleMinutes": {
+          "type": "number"
+        },
+        "careerContextNotes": {
+          "type": "string",
+          "maxLength": 15000
+        },
+        "careerExperiences": {
+          "type": "array",
+          "description": "Extended career roles, projects, and achievements including items not on the current resume (max 30)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "email",
+        "displayName",
+        "onboardingCompleted",
+        "roleTypes",
+        "locations",
+        "workModes",
+        "keywords",
+        "employmentTypes",
+        "searchPrompt",
+        "gmailQuery",
+        "gmailSenders",
+        "slackChannels",
+        "whatsappGroups",
+        "autoScheduleEnabled",
+        "autoScheduleMinutes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Job": {
+      "title": "Job",
+      "description": "Normalized job record discovered by agents, Gmail/Slack/WhatsApp scanners, or imported via CSV/JSON mapping.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "urlHash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "company": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "companyDomain": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "stage": {
+          "type": "string",
+          "enum": ["inbox", "saved", "applied", "interviewing", "offer", "archived"]
+        },
+        "isNew": {
+          "type": "boolean"
+        },
+        "matchScore": {
+          "type": "number"
+        },
+        "previousMatchScore": {
+          "type": "number"
+        },
+        "matchReason": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "salaryMin": {
+          "type": "number"
+        },
+        "salaryMax": {
+          "type": "number"
+        },
+        "salaryLabel": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "location": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "locationType": {
+          "type": "string",
+          "enum": ["Remote", "Hybrid", "Onsite"]
+        },
+        "employmentType": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "sourceId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "sourceName": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "atsType": {
+          "type": "string",
+          "enum": ["Greenhouse", "Lever", "Ashby", "Custom Markdown", "RSS Feed", "Gmail", "Slack", "WhatsApp", "CSV Import"]
+        },
+        "jobUrl": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "discoveredAt": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "discoveredTime": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "deadlineAt": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "skills": {
+          "type": "array",
+          "description": "Extracted skills/tags (max 25)."
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "fullDescription": {
+          "type": "string",
+          "maxLength": 16000
+        },
+        "networkingContacts": {
+          "type": "array",
+          "description": "Networking outreach contacts tracked for this role with status, follow-up dates, and sentiment (max 30)."
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "feedback": {
+          "type": "string",
+          "enum": ["up", "down", "none"]
+        },
+        "dislikeReason": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "urlHash",
+        "title",
+        "company",
+        "companyDomain",
+        "stage",
+        "isNew",
+        "matchScore",
+        "matchReason",
+        "salaryLabel",
+        "location",
+        "locationType",
+        "sourceId",
+        "sourceName",
+        "atsType",
+        "jobUrl",
+        "discoveredAt",
+        "discoveredTime",
+        "skills",
+        "summary",
+        "notes",
+        "feedback",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "JobSource": {
+      "title": "JobSource",
+      "description": "Configured ATS feed, career page, or RSS ingestion source belonging to a user.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "atsType": {
+          "type": "string",
+          "enum": ["Greenhouse", "Lever", "Ashby", "Custom Markdown", "RSS Feed", "Gmail", "Slack", "WhatsApp", "CSV Import"]
+        },
+        "cadenceHours": {
+          "type": "number"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "lastCheckedAt": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "totalFound": {
+          "type": "number"
+        },
+        "lastNewCount": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "name",
+        "url",
+        "atsType",
+        "cadenceHours",
+        "enabled",
+        "lastCheckedAt",
+        "totalFound",
+        "lastNewCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LearnedRule": {
+      "title": "LearnedRule",
+      "description": "Active or paused job filtering rule created manually or synthesized from triage feedback.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "origin": {
+          "type": "string",
+          "enum": ["manual", "synthesized"]
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "ownerId", "text", "origin", "active", "createdAt", "updatedAt"]
+    },
+    "FeedbackEntry": {
+      "title": "FeedbackEntry",
+      "description": "Thumbs up/down feedback log entry used for few-shot scoring and preference synthesis.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "jobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "jobTitle": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "company": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "vote": {
+          "type": "string",
+          "enum": ["up", "down"]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "createdDateLabel": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "ownerId", "jobId", "jobTitle", "company", "vote", "createdDateLabel", "createdAt"]
+    },
+    "JobEvent": {
+      "title": "JobEvent",
+      "description": "User-scheduled interview or follow-up milestone linked to a job.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "jobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "type": {
+          "type": "string",
+          "enum": ["interview", "followup"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "ownerId", "jobId", "date", "label", "type", "createdAt"]
+    },
+    "ImportBatch": {
+      "title": "ImportBatch",
+      "description": "Metadata audit record for an uploaded CSV/JSON role import and its field mapping.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "totalRows": {
+          "type": "number"
+        },
+        "importedCount": {
+          "type": "number"
+        },
+        "skippedDuplicates": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "ownerId", "fileName", "totalRows", "importedCount", "skippedDuplicates", "createdAt"]
+    },
+    "RoleResume": {
+      "title": "RoleResume",
+      "description": "User's uploaded base resume mapped to a specific role type (e.g., PM, PMM, Strategy).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roleType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "fileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "rawText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 25000
+        },
+        "uploadedAt": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "ownerId", "roleType", "fileName", "rawText", "uploadedAt", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User account profile, intake criteria, extended career context, and workspace settings (owner-only)."
+    },
+    "/users/{userId}/jobs/{jobId}": {
+      "schema": { "$ref": "#/entities/Job" },
+      "description": "User's normalized job pipeline records (owner-only)."
+    },
+    "/users/{userId}/sources/{sourceId}": {
+      "schema": { "$ref": "#/entities/JobSource" },
+      "description": "User's configured ATS and career page sources (owner-only)."
+    },
+    "/users/{userId}/rules/{ruleId}": {
+      "schema": { "$ref": "#/entities/LearnedRule" },
+      "description": "User's active and paused preference filter rules (owner-only)."
+    },
+    "/users/{userId}/feedback/{feedbackId}": {
+      "schema": { "$ref": "#/entities/FeedbackEntry" },
+      "description": "User's thumbs-up and thumbs-down triage feedback log (owner-only)."
+    },
+    "/users/{userId}/events/{eventId}": {
+      "schema": { "$ref": "#/entities/JobEvent" },
+      "description": "User's custom interview and follow-up calendar milestones (owner-only)."
+    },
+    "/users/{userId}/imports/{importId}": {
+      "schema": { "$ref": "#/entities/ImportBatch" },
+      "description": "User's CSV/JSON role import history records (owner-only)."
+    },
+    "/users/{userId}/resumes/{resumeId}": {
+      "schema": { "$ref": "#/entities/RoleResume" },
+      "description": "User's role-specific uploaded resumes for per-job tailoring (owner-only)."
+    }
+  }
+}

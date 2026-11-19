@@ -1,0 +1,6 @@
+{
+  "name": "Meridian",
+  "description": "Personal agentic job discovery and multi-view pipeline workspace with Table, Kanban, and Calendar views plus preference-learning triage.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

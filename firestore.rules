@@ -1,0 +1,517 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Hardened Global Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isVerifiedOwner(userId) {
+      return isVerified() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isBoundedString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isBoundedStringList(val, maxItems) {
+      return val is list &&
+        val.size() <= maxItems &&
+        (val.size() == 0 || (val[0] is string && val[0].size() <= 120));
+    }
+
+    function parentUserExists(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId));
+    }
+
+    // --- Validation Blueprints (Pillar 2: Anti-Update-Gap) ---
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid', 'email', 'displayName', 'onboardingCompleted',
+          'roleTypes', 'locations', 'workModes', 'keywords', 'employmentTypes',
+          'searchPrompt', 'gmailQuery', 'gmailSenders', 'slackChannels', 'whatsappGroups',
+          'autoScheduleEnabled', 'autoScheduleMinutes',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'onboardingCompleted',
+          'roleTypes', 'locations', 'workModes', 'keywords', 'employmentTypes',
+          'searchPrompt', 'gmailQuery', 'gmailSenders', 'slackChannels', 'whatsappGroups',
+          'autoScheduleEnabled', 'autoScheduleMinutes',
+          'careerContextNotes', 'careerExperiences',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.uid) &&
+        data.uid == request.auth.uid &&
+        data.uid == userId &&
+        isBoundedString(data.email, 3, 254) &&
+        isBoundedString(data.displayName, 0, 120) &&
+        data.onboardingCompleted is bool &&
+        isBoundedStringList(data.roleTypes, 20) &&
+        isBoundedStringList(data.locations, 20) &&
+        isBoundedStringList(data.workModes, 5) &&
+        isBoundedStringList(data.keywords, 30) &&
+        isBoundedStringList(data.employmentTypes, 6) &&
+        isBoundedString(data.searchPrompt, 0, 3000) &&
+        isBoundedString(data.gmailQuery, 0, 1000) &&
+        isBoundedStringList(data.gmailSenders, 30) &&
+        isBoundedStringList(data.slackChannels, 20) &&
+        isBoundedStringList(data.whatsappGroups, 20) &&
+        data.autoScheduleEnabled is bool &&
+        data.autoScheduleMinutes is number &&
+        data.autoScheduleMinutes >= 5 &&
+        data.autoScheduleMinutes <= 1440 &&
+        (!('careerContextNotes' in data) || isBoundedString(data.careerContextNotes, 0, 15000)) &&
+        (!('careerExperiences' in data) || (data.careerExperiences is list && data.careerExperiences.size() <= 30)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidStage(stage) {
+      return stage in ['inbox', 'saved', 'applied', 'interviewing', 'offer', 'archived'];
+    }
+
+    function isValidLocationType(locType) {
+      return locType in ['Remote', 'Hybrid', 'Onsite'];
+    }
+
+    function isValidAtsType(atsType) {
+      return atsType in [
+        'Greenhouse', 'Lever', 'Ashby', 'Custom Markdown',
+        'RSS Feed', 'Gmail', 'Slack', 'WhatsApp', 'CSV Import'
+      ];
+    }
+
+    function isValidFeedbackValue(val) {
+      return val in ['up', 'down', 'none'];
+    }
+
+    function isValidJob(data, userId, jobId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'urlHash', 'title', 'company', 'companyDomain',
+          'stage', 'isNew', 'matchScore', 'matchReason', 'salaryLabel',
+          'location', 'locationType', 'sourceId', 'sourceName', 'atsType',
+          'jobUrl', 'discoveredAt', 'discoveredTime', 'skills', 'summary',
+          'notes', 'feedback', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'urlHash', 'title', 'company', 'companyDomain',
+          'stage', 'isNew', 'matchScore', 'previousMatchScore', 'matchReason',
+          'salaryMin', 'salaryMax', 'salaryLabel', 'location', 'locationType',
+          'employmentType', 'sourceId', 'sourceName', 'atsType', 'jobUrl',
+          'discoveredAt', 'discoveredTime', 'deadlineAt', 'skills', 'summary',
+          'fullDescription', 'networkingContacts',
+          'notes', 'feedback', 'dislikeReason', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.id == jobId &&
+        isValidId(data.ownerId) &&
+        data.ownerId == request.auth.uid &&
+        data.ownerId == userId &&
+        isBoundedString(data.urlHash, 1, 128) &&
+        isBoundedString(data.title, 1, 200) &&
+        isBoundedString(data.company, 1, 160) &&
+        isBoundedString(data.companyDomain, 0, 160) &&
+        isValidStage(data.stage) &&
+        data.isNew is bool &&
+        data.matchScore is number &&
+        data.matchScore >= 0 &&
+        data.matchScore <= 100 &&
+        (!('previousMatchScore' in data) || (data.previousMatchScore is number && data.previousMatchScore >= 0 && data.previousMatchScore <= 100)) &&
+        isBoundedString(data.matchReason, 0, 600) &&
+        (!('salaryMin' in data) || data.salaryMin == null || (data.salaryMin is number && data.salaryMin >= 0 && data.salaryMin <= 5000000)) &&
+        (!('salaryMax' in data) || data.salaryMax == null || (data.salaryMax is number && data.salaryMax >= 0 && data.salaryMax <= 5000000)) &&
+        isBoundedString(data.salaryLabel, 0, 80) &&
+        isBoundedString(data.location, 0, 160) &&
+        isValidLocationType(data.locationType) &&
+        (!('employmentType' in data) || isBoundedString(data.employmentType, 0, 60)) &&
+        isBoundedString(data.sourceId, 0, 128) &&
+        isBoundedString(data.sourceName, 0, 160) &&
+        isValidAtsType(data.atsType) &&
+        isBoundedString(data.jobUrl, 0, 1000) &&
+        isBoundedString(data.discoveredAt, 0, 32) &&
+        isBoundedString(data.discoveredTime, 0, 32) &&
+        (!('deadlineAt' in data) || data.deadlineAt == null || isBoundedString(data.deadlineAt, 0, 32)) &&
+        isBoundedStringList(data.skills, 25) &&
+        isBoundedString(data.summary, 0, 2000) &&
+        (!('fullDescription' in data) || isBoundedString(data.fullDescription, 0, 16000)) &&
+        (!('networkingContacts' in data) || (data.networkingContacts is list && data.networkingContacts.size() <= 30)) &&
+        isBoundedString(data.notes, 0, 4000) &&
+        isValidFeedbackValue(data.feedback) &&
+        (!('dislikeReason' in data) || data.dislikeReason == null || isBoundedString(data.dislikeReason, 0, 80)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidJobSource(data, userId, sourceId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'name', 'url', 'atsType', 'cadenceHours',
+          'enabled', 'lastCheckedAt', 'totalFound', 'lastNewCount',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'name', 'url', 'atsType', 'cadenceHours',
+          'enabled', 'lastCheckedAt', 'totalFound', 'lastNewCount',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.id == sourceId &&
+        isValidId(data.ownerId) &&
+        data.ownerId == request.auth.uid &&
+        data.ownerId == userId &&
+        isBoundedString(data.name, 1, 160) &&
+        isBoundedString(data.url, 1, 1000) &&
+        isValidAtsType(data.atsType) &&
+        data.cadenceHours is number &&
+        data.cadenceHours >= 1 &&
+        data.cadenceHours <= 168 &&
+        data.enabled is bool &&
+        isBoundedString(data.lastCheckedAt, 0, 80) &&
+        data.totalFound is number &&
+        data.totalFound >= 0 &&
+        data.lastNewCount is number &&
+        data.lastNewCount >= 0 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidLearnedRule(data, userId, ruleId) {
+      return data.keys().hasAll(['id', 'ownerId', 'text', 'origin', 'active', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'ownerId', 'text', 'origin', 'active', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.id == ruleId &&
+        isValidId(data.ownerId) &&
+        data.ownerId == request.auth.uid &&
+        data.ownerId == userId &&
+        isBoundedString(data.text, 1, 400) &&
+        data.origin in ['manual', 'synthesized'] &&
+        data.active is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidFeedbackEntry(data, userId, feedbackId) {
+      return data.keys().hasAll(['id', 'ownerId', 'jobId', 'jobTitle', 'company', 'vote', 'createdDateLabel', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'ownerId', 'jobId', 'jobTitle', 'company', 'vote', 'reason', 'createdDateLabel', 'createdAt']) &&
+        isValidId(data.id) &&
+        data.id == feedbackId &&
+        isValidId(data.ownerId) &&
+        data.ownerId == request.auth.uid &&
+        data.ownerId == userId &&
+        isBoundedString(data.jobId, 1, 128) &&
+        isBoundedString(data.jobTitle, 0, 200) &&
+        isBoundedString(data.company, 0, 160) &&
+        data.vote in ['up', 'down'] &&
+        (!('reason' in data) || data.reason == null || isBoundedString(data.reason, 0, 80)) &&
+        isBoundedString(data.createdDateLabel, 0, 40) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidJobEvent(data, userId, eventId) {
+      return data.keys().hasAll(['id', 'ownerId', 'jobId', 'date', 'label', 'type', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'ownerId', 'jobId', 'date', 'label', 'type', 'createdAt']) &&
+        isValidId(data.id) &&
+        data.id == eventId &&
+        isValidId(data.ownerId) &&
+        data.ownerId == request.auth.uid &&
+        data.ownerId == userId &&
+        isBoundedString(data.jobId, 1, 128) &&
+        data.date is string &&
+        data.date.size() == 10 &&
+        data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        isBoundedString(data.label, 1, 160) &&
+        data.type in ['interview', 'followup'] &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidImportBatch(data, userId, importId) {
+      return data.keys().hasAll(['id', 'ownerId', 'fileName', 'totalRows', 'importedCount', 'skippedDuplicates', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'ownerId', 'fileName', 'totalRows', 'importedCount', 'skippedDuplicates', 'createdAt']) &&
+        isValidId(data.id) &&
+        data.id == importId &&
+        isValidId(data.ownerId) &&
+        data.ownerId == request.auth.uid &&
+        data.ownerId == userId &&
+        isBoundedString(data.fileName, 1, 200) &&
+        data.totalRows is number &&
+        data.totalRows >= 0 &&
+        data.importedCount is number &&
+        data.importedCount >= 0 &&
+        data.skippedDuplicates is number &&
+        data.skippedDuplicates >= 0 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidRoleResume(data, userId, resumeId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'roleType', 'fileName', 'rawText', 'uploadedAt',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'roleType', 'fileName', 'rawText', 'uploadedAt',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.id == resumeId &&
+        isValidId(data.ownerId) &&
+        data.ownerId == request.auth.uid &&
+        data.ownerId == userId &&
+        isBoundedString(data.roleType, 1, 120) &&
+        isBoundedString(data.fileName, 1, 200) &&
+        isBoundedString(data.rawText, 1, 25000) &&
+        isBoundedString(data.uploadedAt, 0, 32) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // --- User Profile & Private Workspace Collections ---
+    match /users/{userId} {
+      // Strictly owner-only PII access; no list enumeration
+      allow get: if isValidId(userId) && isVerifiedOwner(userId);
+      allow list: if false;
+
+      allow create: if isValidId(userId) &&
+        isVerifiedOwner(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(userId) &&
+        isVerifiedOwner(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Action 1: Update intake profile, channel senders, cadence, career context, and onboarding completion
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'displayName', 'email', 'onboardingCompleted',
+            'roleTypes', 'locations', 'workModes', 'keywords', 'employmentTypes',
+            'searchPrompt', 'gmailQuery', 'gmailSenders', 'slackChannels', 'whatsappGroups',
+            'autoScheduleEnabled', 'autoScheduleMinutes',
+            'careerContextNotes', 'careerExperiences', 'updatedAt'
+          ]) ||
+          // Action 2: Update Gmail senders/query, Slack/WhatsApp channels, or schedule settings
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'gmailQuery', 'gmailSenders', 'slackChannels', 'whatsappGroups',
+            'autoScheduleEnabled', 'autoScheduleMinutes', 'searchPrompt', 'updatedAt'
+          ]) ||
+          // Action 3: Update extended career context & off-resume experiences
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'careerContextNotes', 'careerExperiences', 'updatedAt'
+          ])
+        );
+
+      allow delete: if isValidId(userId) && isVerifiedOwner(userId);
+
+      // Subcollection: Normalized Job Pipeline
+      match /jobs/{jobId} {
+        allow get: if isValidId(userId) && isValidId(jobId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+        allow list: if isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+
+        allow create: if isValidId(userId) &&
+          isValidId(jobId) &&
+          isVerifiedOwner(userId) &&
+          isValidJob(incoming(), userId, jobId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          parentUserExists(userId);
+
+        allow update: if isValidId(userId) &&
+          isValidId(jobId) &&
+          isVerifiedOwner(userId) &&
+          isValidJob(incoming(), userId, jobId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().id == existing().id &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            // Action 1: Triage & Pipeline stage update
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'stage', 'isNew', 'feedback', 'dislikeReason', 'updatedAt'
+            ]) ||
+            // Action 2: Notes edit
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'notes', 'updatedAt'
+            ]) ||
+            // Action 3: Re-score match update
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'matchScore', 'previousMatchScore', 'matchReason', 'updatedAt'
+            ]) ||
+            // Action 4: Networking tracker contacts update
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'networkingContacts', 'updatedAt'
+            ]) ||
+            // Action 5: Full job description update
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'fullDescription', 'updatedAt'
+            ])
+          );
+
+        allow delete: if isValidId(userId) && isValidId(jobId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+      }
+
+      // Subcollection: Ingestion Sources
+      match /sources/{sourceId} {
+        allow get: if isValidId(userId) && isValidId(sourceId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+        allow list: if isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+
+        allow create: if isValidId(userId) &&
+          isValidId(sourceId) &&
+          isVerifiedOwner(userId) &&
+          isValidJobSource(incoming(), userId, sourceId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          parentUserExists(userId);
+
+        allow update: if isValidId(userId) &&
+          isValidId(sourceId) &&
+          isVerifiedOwner(userId) &&
+          isValidJobSource(incoming(), userId, sourceId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().id == existing().id &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            // Action 1: Toggle enabled or cadence
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'enabled', 'cadenceHours', 'updatedAt'
+            ]) ||
+            // Action 2: Record run metrics
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'lastCheckedAt', 'totalFound', 'lastNewCount', 'updatedAt'
+            ])
+          );
+
+        allow delete: if isValidId(userId) && isValidId(sourceId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+      }
+
+      // Subcollection: Learned Filter Rules
+      match /rules/{ruleId} {
+        allow get: if isValidId(userId) && isValidId(ruleId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+        allow list: if isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+
+        allow create: if isValidId(userId) &&
+          isValidId(ruleId) &&
+          isVerifiedOwner(userId) &&
+          isValidLearnedRule(incoming(), userId, ruleId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          parentUserExists(userId);
+
+        allow update: if isValidId(userId) &&
+          isValidId(ruleId) &&
+          isVerifiedOwner(userId) &&
+          isValidLearnedRule(incoming(), userId, ruleId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().id == existing().id &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['active', 'text', 'updatedAt'])
+          );
+
+        allow delete: if isValidId(userId) && isValidId(ruleId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+      }
+
+      // Subcollection: Triage Feedback History
+      match /feedback/{feedbackId} {
+        allow get: if isValidId(userId) && isValidId(feedbackId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+        allow list: if isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+
+        allow create: if isValidId(userId) &&
+          isValidId(feedbackId) &&
+          isVerifiedOwner(userId) &&
+          isValidFeedbackEntry(incoming(), userId, feedbackId) &&
+          incoming().createdAt == request.time &&
+          parentUserExists(userId);
+
+        allow update: if false;
+        allow delete: if isValidId(userId) && isValidId(feedbackId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+      }
+
+      // Subcollection: Calendar Interview & Follow-up Events
+      match /events/{eventId} {
+        allow get: if isValidId(userId) && isValidId(eventId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+        allow list: if isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+
+        allow create: if isValidId(userId) &&
+          isValidId(eventId) &&
+          isVerifiedOwner(userId) &&
+          isValidJobEvent(incoming(), userId, eventId) &&
+          incoming().createdAt == request.time &&
+          parentUserExists(userId);
+
+        allow update: if false;
+        allow delete: if isValidId(userId) && isValidId(eventId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+      }
+
+      // Subcollection: Upload & Mapping Import Batches
+      match /imports/{importId} {
+        allow get: if isValidId(userId) && isValidId(importId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+        allow list: if isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+
+        allow create: if isValidId(userId) &&
+          isValidId(importId) &&
+          isVerifiedOwner(userId) &&
+          isValidImportBatch(incoming(), userId, importId) &&
+          incoming().createdAt == request.time &&
+          parentUserExists(userId);
+
+        allow update: if false;
+        allow delete: if isValidId(userId) && isValidId(importId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+      }
+
+      // Subcollection: Role-Specific Uploaded Base Resumes
+      match /resumes/{resumeId} {
+        allow get: if isValidId(userId) && isValidId(resumeId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+        allow list: if isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+
+        allow create: if isValidId(userId) &&
+          isValidId(resumeId) &&
+          isVerifiedOwner(userId) &&
+          isValidRoleResume(incoming(), userId, resumeId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          parentUserExists(userId);
+
+        allow update: if isValidId(userId) &&
+          isValidId(resumeId) &&
+          isVerifiedOwner(userId) &&
+          isValidRoleResume(incoming(), userId, resumeId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().id == existing().id &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'roleType', 'fileName', 'rawText', 'uploadedAt', 'updatedAt'
+            ])
+          );
+
+        allow delete: if isValidId(userId) && isValidId(resumeId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+      }
+    }
+  }
+}

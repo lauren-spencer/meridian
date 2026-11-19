@@ -1,0 +1,979 @@
+import 'dotenv/config';
+import express from 'express';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createServer as createViteServer } from 'vite';
+import { fetchFullJobDescriptionFromUrl } from './src/lib/agentRunner.ts';
+import {
+  rescoreJobsWithFeedback,
+  synthesizePreferencesWithGemini,
+  type RichFeedbackItem,
+} from './src/lib/feedbackEngine.ts';
+import { runMeridianChat } from './src/lib/gemini.ts';
+import { scanGmailForJobs } from './src/lib/gmailScanner.ts';
+import { suggestColumnMappingWithGemini } from './src/lib/importMapper.ts';
+import { realtimeHub } from './src/lib/realtimeHub.ts';
+import {
+  buildTailoredResumeDocxBuffer,
+  parseUploadedResume,
+  tailorResumeForJob,
+} from './src/lib/resumeTailor.ts';
+import {
+  buildSlackAuthUrl,
+  exchangeSlackCode,
+  scanSlackForJobs,
+} from './src/lib/slackScanner.ts';
+import { scanWhatsAppMessages } from './src/lib/whatsappScanner.ts';
+import type { WorkspaceChatContext } from './src/types/chat.ts';
+import type {
+  CareerExperienceItem,
+  DislikeReason,
+  JobRecord,
+  JobSource,
+  RoleResume,
+  TailoredResumeDocument,
+} from './src/types/job.ts';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PORT = Number(process.env.PORT) || 3000;
+const isProduction = process.env.NODE_ENV === 'production';
+
+async function startServer() {
+  const app = express();
+  app.use(express.json({ limit: '12mb' }));
+
+  // Real-time Server-Sent Events stream for live agent & re-score broadcasts
+  app.get('/api/events', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    const clientId = realtimeHub.addClient(res);
+    req.on('close', () => {
+      realtimeHub.removeClient(clientId);
+    });
+  });
+
+  // Sync latest workspace criteria/sources/hashes to server-side background scheduler
+  app.post('/api/workspace/sync', (req, res) => {
+    const { sources, existingHashes, searchPrompt, rules, recentFeedback } =
+      req.body as {
+        sources?: JobSource[];
+        existingHashes?: string[];
+        searchPrompt?: string;
+        rules?: { text: string; active: boolean }[];
+        recentFeedback?: {
+          jobTitle: string;
+          company: string;
+          vote: 'up' | 'down';
+          reason?: DislikeReason;
+        }[];
+      };
+
+    if (Array.isArray(sources)) {
+      realtimeHub.syncWorkspaceContext({
+        sources,
+        existingHashes: Array.isArray(existingHashes) ? existingHashes : [],
+        searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
+        rules: Array.isArray(rules) ? rules : [],
+        recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
+        maxNewPerRun: 6,
+      });
+    }
+
+    res.json({ ok: true, schedule: realtimeHub.getScheduleState() });
+  });
+
+  // Configure server-authoritative scheduled background agent runs
+  app.post('/api/schedule', (req, res) => {
+    const { enabled, intervalMinutes, context } = req.body as {
+      enabled?: boolean;
+      intervalMinutes?: number;
+      context?: {
+        sources: JobSource[];
+        existingHashes: string[];
+        searchPrompt: string;
+        rules: { text: string; active: boolean }[];
+        recentFeedback: {
+          jobTitle: string;
+          company: string;
+          vote: 'up' | 'down';
+          reason?: DislikeReason;
+        }[];
+      };
+    };
+
+    const state = realtimeHub.updateSchedule({
+      enabled: Boolean(enabled),
+      intervalMinutes: typeof intervalMinutes === 'number' ? intervalMinutes : 240,
+      context: context
+        ? {
+            sources: Array.isArray(context.sources) ? context.sources : [],
+            existingHashes: Array.isArray(context.existingHashes)
+              ? context.existingHashes
+              : [],
+            searchPrompt: context.searchPrompt ?? '',
+            rules: Array.isArray(context.rules) ? context.rules : [],
+            recentFeedback: Array.isArray(context.recentFeedback)
+              ? context.recentFeedback
+              : [],
+            maxNewPerRun: 6,
+          }
+        : undefined,
+    });
+
+    res.json(state);
+  });
+
+  // Multi-turn Gemini Search & Feedback Assistant
+  app.post('/api/chat', async (req, res) => {
+    try {
+      const { message, history, workspaceContext } = req.body as {
+        message?: string;
+        history?: { role: 'user' | 'model'; text: string }[];
+        workspaceContext?: WorkspaceChatContext;
+      };
+
+      if (!message || typeof message !== 'string' || !message.trim()) {
+        res.status(400).json({ error: 'Message is required.' });
+        return;
+      }
+
+      if (!workspaceContext || typeof workspaceContext !== 'object') {
+        res.status(400).json({ error: 'Workspace context is required.' });
+        return;
+      }
+
+      const result = await runMeridianChat({
+        message: message.trim(),
+        history: Array.isArray(history) ? history : [],
+        workspaceContext,
+      });
+
+      res.json(result);
+    } catch (error: unknown) {
+      console.error('Error in POST /api/chat:', error);
+      const errObj = error as { status?: number; message?: string };
+      const statusCode =
+        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
+          ? errObj.status
+          : 500;
+      res.status(statusCode).json({
+        error:
+          errObj?.message ||
+          'Failed to reach the assistant. Please try again in a moment.',
+      });
+    }
+  });
+
+  // Live ATS / Markdown Agent Runner (broadcasts updates via SSE)
+  app.post('/api/agent/run', async (req, res) => {
+    try {
+      const {
+        sources,
+        existingHashes,
+        searchPrompt,
+        rules,
+        recentFeedback,
+        maxNewPerRun,
+      } = req.body as {
+        sources?: JobSource[];
+        existingHashes?: string[];
+        searchPrompt?: string;
+        rules?: { text: string; active: boolean }[];
+        recentFeedback?: {
+          jobTitle: string;
+          company: string;
+          vote: 'up' | 'down';
+          reason?: DislikeReason;
+        }[];
+        maxNewPerRun?: number;
+      };
+
+      if (!Array.isArray(sources) || sources.length === 0) {
+        res.status(400).json({ error: 'At least one enabled source is required.' });
+        return;
+      }
+
+      const output = await realtimeHub.executeRun(
+        {
+          sources,
+          existingHashes: Array.isArray(existingHashes) ? existingHashes : [],
+          searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
+          rules: Array.isArray(rules) ? rules : [],
+          recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
+          maxNewPerRun: typeof maxNewPerRun === 'number' ? maxNewPerRun : 6,
+        },
+        'manual'
+      );
+
+      res.json(output);
+    } catch (error: unknown) {
+      console.error('Error in POST /api/agent/run:', error);
+      const errObj = error as { status?: number; message?: string };
+      const statusCode =
+        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
+          ? errObj.status
+          : 500;
+      res.status(statusCode).json({
+        error:
+          errObj?.message ||
+          'Agent run failed while scoring or fetching sources.',
+      });
+    }
+  });
+
+  // Week 3 Stage 1: Re-score existing Inbox/Saved roles using updated criteria + few-shot feedback
+  app.post('/api/agent/rescore', async (req, res) => {
+    try {
+      const { jobs, searchPrompt, rules, recentFeedback } = req.body as {
+        jobs?: Pick<
+          JobRecord,
+          'id' | 'title' | 'company' | 'salaryLabel' | 'location' | 'locationType' | 'skills' | 'summary'
+        >[];
+        searchPrompt?: string;
+        rules?: { text: string; active: boolean }[];
+        recentFeedback?: RichFeedbackItem[];
+      };
+
+      if (!Array.isArray(jobs) || jobs.length === 0) {
+        res.status(400).json({ error: 'At least one job is required to re-score.' });
+        return;
+      }
+
+      const patches = await rescoreJobsWithFeedback({
+        jobs,
+        searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
+        rules: Array.isArray(rules) ? rules : [],
+        recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
+      });
+
+      realtimeHub.broadcast('jobs:rescored', { patches });
+      res.json({ patches });
+    } catch (error: unknown) {
+      console.error('Error in POST /api/agent/rescore:', error);
+      const errObj = error as { status?: number; message?: string };
+      const statusCode =
+        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
+          ? errObj.status
+          : 500;
+      res.status(statusCode).json({
+        error: errObj?.message || 'Failed to re-score roles.',
+      });
+    }
+  });
+
+  // Week 3 Stage 2: AI Preference Synthesis from rolling likes/dislikes
+  app.post('/api/feedback/synthesize', async (req, res) => {
+    try {
+      const { searchPrompt, rules, recentFeedback } = req.body as {
+        searchPrompt?: string;
+        rules?: { text: string; active: boolean }[];
+        recentFeedback?: RichFeedbackItem[];
+      };
+
+      const result = await synthesizePreferencesWithGemini({
+        searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
+        rules: Array.isArray(rules) ? rules : [],
+        recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
+      });
+
+      res.json(result);
+    } catch (error: unknown) {
+      console.error('Error in POST /api/feedback/synthesize:', error);
+      const errObj = error as { status?: number; message?: string };
+      const statusCode =
+        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
+          ? errObj.status
+          : 500;
+      res.status(statusCode).json({
+        error: errObj?.message || 'Failed to synthesize preference rules.',
+      });
+    }
+  });
+
+  // Gmail Read-Only Job Scanner (LinkedIn, Kellogg, 12twenty)
+  app.post('/api/gmail/scan', async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        res.status(401).json({
+          error: 'Missing Google access token. Please sign in with Google to scan Gmail.',
+        });
+        return;
+      }
+
+      const accessToken = authHeader.slice('Bearer '.length).trim();
+      const {
+        query,
+        maxMessages,
+        existingHashes,
+        searchPrompt,
+        rules,
+        recentFeedback,
+      } = req.body as {
+        query?: string;
+        maxMessages?: number;
+        existingHashes?: string[];
+        searchPrompt?: string;
+        rules?: { text: string; active: boolean }[];
+        recentFeedback?: {
+          jobTitle: string;
+          company: string;
+          vote: 'up' | 'down';
+          reason?: DislikeReason;
+        }[];
+      };
+
+      const output = await scanGmailForJobs({
+        accessToken,
+        query,
+        maxMessages,
+        existingHashes: Array.isArray(existingHashes) ? existingHashes : [],
+        searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
+        rules: Array.isArray(rules) ? rules : [],
+        recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
+      });
+
+      realtimeHub.broadcast('agent:completed', {
+        trigger: 'manual',
+        newJobs: output.newJobs,
+        runReport: output.runReport,
+      });
+
+      res.json(output);
+    } catch (error: unknown) {
+      console.error('Error in POST /api/gmail/scan:', error);
+      const errObj = error as { status?: number; message?: string };
+      const statusCode =
+        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
+          ? errObj.status
+          : 500;
+      res.status(statusCode).json({
+        error: errObj?.message || 'Failed to scan Gmail messages.',
+      });
+    }
+  });
+
+  // Short-lived in-memory Slack OAuth state & one-time session delivery (resilient to COOP / opener clearing)
+  const pendingSlackOAuth = new Map<string, { redirectUri: string; createdAt: number }>();
+  const completedSlackOAuth = new Map<
+    string,
+    {
+      ok: boolean;
+      accessToken?: string;
+      teamName?: string;
+      authedUserId?: string;
+      error?: string;
+      createdAt: number;
+    }
+  >();
+
+  const pruneSlackOAuthMaps = () => {
+    const now = Date.now();
+    for (const [k, v] of pendingSlackOAuth.entries()) {
+      if (now - v.createdAt > 10 * 60 * 1000) pendingSlackOAuth.delete(k);
+    }
+    for (const [k, v] of completedSlackOAuth.entries()) {
+      if (now - v.createdAt > 2 * 60 * 1000) completedSlackOAuth.delete(k);
+    }
+  };
+
+  const getSlackCallbackUris = (requestedOrigin?: string) => {
+    const envBase = (process.env.APP_URL || '').trim().replace(/\/$/, '');
+    const devBase = envBase || 'http://localhost:3000';
+    const sharedBase = envBase.includes('ais-dev-')
+      ? envBase.replace('ais-dev-', 'ais-pre-')
+      : envBase;
+
+    let activeBase = devBase;
+    if (requestedOrigin) {
+      try {
+        const u = new URL(requestedOrigin);
+        const normalized = u.origin.replace(/\/$/, '');
+        if (
+          normalized === envBase ||
+          normalized === sharedBase ||
+          u.hostname.endsWith('.run.app') ||
+          u.hostname === 'localhost' ||
+          u.hostname === '127.0.0.1'
+        ) {
+          activeBase = normalized;
+        }
+      } catch {
+        // Ignore invalid origin query param and keep APP_URL
+      }
+    }
+
+    return {
+      redirectUri: `${activeBase}/api/slack/callback`,
+      devRedirectUri: `${devBase}/api/slack/callback`,
+      sharedRedirectUri: sharedBase ? `${sharedBase}/api/slack/callback` : null,
+    };
+  };
+
+  // Slack 3P OAuth URL builder
+  app.get('/api/slack/auth/url', (req, res) => {
+    pruneSlackOAuthMaps();
+    const requestedOrigin =
+      typeof req.query.origin === 'string' ? req.query.origin : undefined;
+    const { redirectUri, devRedirectUri, sharedRedirectUri } =
+      getSlackCallbackUris(requestedOrigin);
+    const state = crypto.randomBytes(20).toString('hex');
+    const result = buildSlackAuthUrl(redirectUri, state);
+
+    if (result.configured) {
+      pendingSlackOAuth.set(state, { redirectUri, createdAt: Date.now() });
+    }
+
+    res.json({
+      configured: result.configured,
+      hasClientId: result.hasClientId,
+      hasClientSecret: result.hasClientSecret,
+      url: result.url ?? null,
+      state: result.configured ? state : null,
+      redirectUri,
+      devRedirectUri,
+      sharedRedirectUri,
+    });
+  });
+
+  // One-time poll fallback for Slack OAuth when browser COOP severs window.opener
+  app.get('/api/slack/session', (req, res) => {
+    pruneSlackOAuthMaps();
+    const state = typeof req.query.state === 'string' ? req.query.state.trim() : '';
+    if (!state) {
+      res.status(400).json({ error: 'Missing OAuth state parameter.' });
+      return;
+    }
+    const completed = completedSlackOAuth.get(state);
+    if (!completed) {
+      res.json({ pending: true });
+      return;
+    }
+    completedSlackOAuth.delete(state);
+    res.json({
+      pending: false,
+      ok: completed.ok,
+      accessToken: completed.accessToken,
+      teamName: completed.teamName,
+      authedUserId: completed.authedUserId,
+      error: completed.error,
+    });
+  });
+
+  const renderSlackCallbackHtml = (payload: {
+    ok: boolean;
+    state: string;
+    accessToken?: string;
+    teamName?: string;
+    authedUserId?: string;
+    error?: string;
+  }) => {
+    const postPayload = payload.ok
+      ? {
+          type: 'SLACK_OAUTH_SUCCESS',
+          state: payload.state,
+          accessToken: payload.accessToken,
+          teamName: payload.teamName,
+          authedUserId: payload.authedUserId,
+        }
+      : {
+          type: 'SLACK_OAUTH_ERROR',
+          state: payload.state,
+          error: payload.error || 'Slack authorization failed.',
+        };
+
+    const heading = payload.ok
+      ? `Connected to ${payload.teamName || 'Slack'}`
+      : 'Slack Connection Issue';
+    const detail = payload.ok
+      ? 'Your Slack workspace is connected to Meridian. This window will close automatically.'
+      : payload.error || 'Slack authorization was cancelled or failed.';
+
+    const escapeHtml = (str: string) =>
+      str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+
+    return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(heading)} — Meridian</title>
+  </head>
+  <body style="font-family:Inter,system-ui,-apple-system,sans-serif;background:#fafafa;color:#18181b;padding:32px;max-width:480px;margin:0 auto;">
+    <div style="background:#fff;border:1px solid #e4e4e7;border-radius:10px;padding:24px;">
+      <div style="font-size:15px;font-weight:600;margin-bottom:8px;color:${payload.ok ? '#047857' : '#b91c1c'};">
+        ${escapeHtml(heading)}
+      </div>
+      <p style="font-size:13px;line-height:1.5;color:#52525b;margin:0 0 16px;">
+        ${escapeHtml(detail)}
+      </p>
+      <button onclick="window.close()" style="font-size:12px;font-weight:500;padding:8px 14px;border-radius:6px;border:1px solid #d4d4d8;background:#fff;color:#18181b;cursor:pointer;">
+        Close Window
+      </button>
+    </div>
+    <script>
+      (function () {
+        var data = ${JSON.stringify(postPayload)};
+        try {
+          if (window.opener && !window.opener.closed) {
+            window.opener.postMessage(data, '*');
+          }
+        } catch (e) {}
+        try {
+          if (typeof BroadcastChannel !== 'undefined') {
+            var bc = new BroadcastChannel('meridian_slack_oauth');
+            bc.postMessage(data);
+            bc.close();
+          }
+        } catch (e) {}
+        ${payload.ok ? 'setTimeout(function () { window.close(); }, 350);' : ''}
+      })();
+    </script>
+  </body>
+</html>`;
+  };
+
+  // Slack 3P OAuth callback (handles both with and without trailing slash)
+  const handleSlackCallback = async (
+    req: express.Request,
+    res: express.Response
+  ) => {
+    pruneSlackOAuthMaps();
+    const code = typeof req.query.code === 'string' ? req.query.code : '';
+    const oauthErr = typeof req.query.error === 'string' ? req.query.error : '';
+    const state = typeof req.query.state === 'string' ? req.query.state.trim() : '';
+
+    const pending = state ? pendingSlackOAuth.get(state) : undefined;
+    if (state) pendingSlackOAuth.delete(state);
+
+    if (oauthErr || !code) {
+      const errorMsg =
+        oauthErr === 'access_denied'
+          ? 'Slack access was cancelled or requires Workspace Admin approval for this Slack app.'
+          : oauthErr || 'Missing Slack authorization code.';
+      if (state) {
+        completedSlackOAuth.set(state, {
+          ok: false,
+          error: errorMsg,
+          createdAt: Date.now(),
+        });
+      }
+      realtimeHub.broadcast('slack:oauth', {
+        state,
+        ok: false,
+        error: errorMsg,
+      });
+      res.status(400).send(renderSlackCallbackHtml({ ok: false, state, error: errorMsg }));
+      return;
+    }
+
+    try {
+      const redirectUri = pending?.redirectUri || getSlackCallbackUris().redirectUri;
+      const exchanged = await exchangeSlackCode(code, redirectUri);
+
+      if (state) {
+        completedSlackOAuth.set(state, {
+          ok: true,
+          accessToken: exchanged.accessToken,
+          teamName: exchanged.teamName,
+          authedUserId: exchanged.authedUserId,
+          createdAt: Date.now(),
+        });
+      }
+      realtimeHub.broadcast('slack:oauth', {
+        state,
+        ok: true,
+        accessToken: exchanged.accessToken,
+        teamName: exchanged.teamName,
+        authedUserId: exchanged.authedUserId,
+      });
+
+      res.send(
+        renderSlackCallbackHtml({
+          ok: true,
+          state,
+          accessToken: exchanged.accessToken,
+          teamName: exchanged.teamName,
+          authedUserId: exchanged.authedUserId,
+        })
+      );
+    } catch (error: unknown) {
+      const msg =
+        error instanceof Error ? error.message : 'Slack token exchange failed.';
+      console.error('Slack OAuth callback error:', msg);
+      if (state) {
+        completedSlackOAuth.set(state, {
+          ok: false,
+          error: msg,
+          createdAt: Date.now(),
+        });
+      }
+      realtimeHub.broadcast('slack:oauth', {
+        state,
+        ok: false,
+        error: msg,
+      });
+      res.status(500).send(renderSlackCallbackHtml({ ok: false, state, error: msg }));
+    }
+  };
+  app.get(['/api/slack/callback', '/api/slack/callback/'], handleSlackCallback);
+
+  // Slack Job Channel Scanner
+  app.post('/api/slack/scan', async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        res.status(401).json({
+          error: 'Missing Slack access token. Connect Slack first to scan channels.',
+        });
+        return;
+      }
+
+      const accessToken = authHeader.slice('Bearer '.length).trim();
+      const { channels, existingHashes, searchPrompt, rules, recentFeedback } =
+        req.body as {
+          channels?: string[];
+          existingHashes?: string[];
+          searchPrompt?: string;
+          rules?: { text: string; active: boolean }[];
+          recentFeedback?: {
+            jobTitle: string;
+            company: string;
+            vote: 'up' | 'down';
+            reason?: DislikeReason;
+          }[];
+        };
+
+      const output = await scanSlackForJobs({
+        accessToken,
+        channels: Array.isArray(channels) ? channels : undefined,
+        existingHashes: Array.isArray(existingHashes) ? existingHashes : [],
+        searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
+        rules: Array.isArray(rules) ? rules : [],
+        recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
+      });
+
+      realtimeHub.broadcast('agent:completed', {
+        trigger: 'manual',
+        newJobs: output.newJobs,
+        runReport: output.runReport,
+      });
+
+      res.json(output);
+    } catch (error: unknown) {
+      console.error('Error in POST /api/slack/scan:', error);
+      const errObj = error as { status?: number; message?: string };
+      const statusCode =
+        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
+          ? errObj.status
+          : 500;
+      res.status(statusCode).json({
+        error: errObj?.message || 'Failed to scan Slack channels.',
+      });
+    }
+  });
+
+  // WhatsApp Chat Export / Forwarded Messages Scanner
+  app.post('/api/whatsapp/scan', async (req, res) => {
+    try {
+      const { rawText, groupName, existingHashes, searchPrompt, rules, recentFeedback } =
+        req.body as {
+          rawText?: string;
+          groupName?: string;
+          existingHashes?: string[];
+          searchPrompt?: string;
+          rules?: { text: string; active: boolean }[];
+          recentFeedback?: {
+            jobTitle: string;
+            company: string;
+            vote: 'up' | 'down';
+            reason?: DislikeReason;
+          }[];
+        };
+
+      if (!rawText || typeof rawText !== 'string' || !rawText.trim()) {
+        res.status(400).json({ error: 'WhatsApp chat text or export file is required.' });
+        return;
+      }
+
+      const output = await scanWhatsAppMessages({
+        rawText,
+        groupName,
+        existingHashes: Array.isArray(existingHashes) ? existingHashes : [],
+        searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
+        rules: Array.isArray(rules) ? rules : [],
+        recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
+      });
+
+      realtimeHub.broadcast('agent:completed', {
+        trigger: 'manual',
+        newJobs: output.newJobs,
+        runReport: output.runReport,
+      });
+
+      res.json(output);
+    } catch (error: unknown) {
+      console.error('Error in POST /api/whatsapp/scan:', error);
+      const errObj = error as { status?: number; message?: string };
+      const statusCode =
+        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
+          ? errObj.status
+          : 500;
+      res.status(statusCode).json({
+        error: errObj?.message || 'Failed to extract jobs from WhatsApp messages.',
+      });
+    }
+  });
+
+  // Meta WhatsApp Cloud API Webhook Verification & Forwarded Job Ingestion
+  app.get('/api/whatsapp/webhook', (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+    const expectedToken = process.env.WHATSAPP_VERIFY_TOKEN || 'meridian-whatsapp-verify';
+
+    if (mode === 'subscribe' && token === expectedToken && typeof challenge === 'string') {
+      res.status(200).send(challenge);
+      return;
+    }
+    res.sendStatus(403);
+  });
+
+  app.post('/api/whatsapp/webhook', async (req, res) => {
+    // Acknowledge immediately per Meta webhook SLA, then extract & broadcast if text present
+    res.sendStatus(200);
+    try {
+      const entries = (req.body?.entry ?? []) as {
+        changes?: {
+          value?: {
+            messages?: { text?: { body?: string }; from?: string }[];
+          };
+        }[];
+      }[];
+      const texts: string[] = [];
+      for (const entry of entries) {
+        for (const change of entry.changes ?? []) {
+          for (const msg of change.value?.messages ?? []) {
+            if (msg.text?.body) {
+              texts.push(`WhatsApp (${msg.from || 'Forwarded'}): ${msg.text.body}`);
+            }
+          }
+        }
+      }
+      if (texts.length === 0) return;
+
+      const output = await scanWhatsAppMessages({
+        rawText: texts.join('\n'),
+        groupName: 'WhatsApp Live Forward',
+        existingHashes: [],
+        searchPrompt: '',
+        rules: [],
+        recentFeedback: [],
+      });
+
+      if (output.newJobs.length > 0) {
+        realtimeHub.broadcast('agent:completed', {
+          trigger: 'scheduled',
+          newJobs: output.newJobs,
+          runReport: output.runReport,
+        });
+      }
+    } catch (error) {
+      console.error('WhatsApp webhook processing error:', error);
+    }
+  });
+
+  // AI Column Mapping for Uploaded CSV/JSON Job Spreadsheets
+  app.post('/api/import/map', async (req, res) => {
+    try {
+      const { headers, sampleRows } = req.body as {
+        headers?: string[];
+        sampleRows?: Record<string, string>[];
+      };
+
+      if (!Array.isArray(headers) || headers.length === 0) {
+        res.status(400).json({ error: 'Column headers are required for mapping.' });
+        return;
+      }
+
+      const mappings = await suggestColumnMappingWithGemini({
+        headers,
+        sampleRows: Array.isArray(sampleRows) ? sampleRows : [],
+      });
+
+      res.json({ mappings });
+    } catch (error: unknown) {
+      console.error('Error in POST /api/import/map:', error);
+      const errObj = error as { status?: number; message?: string };
+      res.status(500).json({
+        error: errObj?.message || 'Failed to map uploaded columns.',
+      });
+    }
+  });
+
+  // On-demand Full Job Description fetcher for public job posting URLs
+  app.post('/api/jobs/fetch-description', async (req, res) => {
+    try {
+      const { jobUrl } = req.body as { jobUrl?: string };
+      if (!jobUrl || typeof jobUrl !== 'string' || !jobUrl.trim()) {
+        res.status(400).json({ error: 'Job posting URL is required.' });
+        return;
+      }
+      const fullDescription = await fetchFullJobDescriptionFromUrl(jobUrl.trim());
+      res.json({ fullDescription });
+    } catch (error: unknown) {
+      console.error('Error in POST /api/jobs/fetch-description:', error);
+      const errObj = error as { message?: string };
+      res.status(500).json({
+        error: errObj?.message || 'Could not fetch full job description from URL.',
+      });
+    }
+  });
+
+  // Parse uploaded .docx / .pdf / .txt resume into clean text
+  app.post('/api/resumes/parse', async (req, res) => {
+    try {
+      const { fileName, mimeType, base64Data } = req.body as {
+        fileName?: string;
+        mimeType?: string;
+        base64Data?: string;
+      };
+      if (!fileName || !base64Data) {
+        res.status(400).json({ error: 'fileName and base64Data are required.' });
+        return;
+      }
+      const parsed = await parseUploadedResume({ fileName, mimeType, base64Data });
+      res.json(parsed);
+    } catch (error: unknown) {
+      console.error('Error in POST /api/resumes/parse:', error);
+      const errObj = error as { status?: number; message?: string };
+      res.status(500).json({
+        error: errObj?.message || 'Could not parse uploaded resume file.',
+      });
+    }
+  });
+
+  // Tailor a 1-page resume per job with edits in red + off-resume experience pulling
+  app.post('/api/resumes/tailor', async (req, res) => {
+    try {
+      const {
+        job,
+        baseResume,
+        careerExperiences,
+        careerContextNotes,
+        customInstructions,
+      } = req.body as {
+        job?: Pick<
+          JobRecord,
+          'title' | 'company' | 'location' | 'locationType' | 'skills' | 'summary' | 'fullDescription'
+        >;
+        baseResume?: RoleResume;
+        careerExperiences?: CareerExperienceItem[];
+        careerContextNotes?: string;
+        customInstructions?: string;
+      };
+
+      if (!job || !baseResume || !baseResume.rawText?.trim()) {
+        res.status(400).json({
+          error: 'Both a target job and an uploaded base resume are required.',
+        });
+        return;
+      }
+
+      const tailored = await tailorResumeForJob({
+        job,
+        baseResume,
+        careerExperiences: Array.isArray(careerExperiences) ? careerExperiences : [],
+        careerContextNotes:
+          typeof careerContextNotes === 'string' ? careerContextNotes : '',
+        customInstructions:
+          typeof customInstructions === 'string' ? customInstructions : undefined,
+      });
+
+      const redlinedBuffer = await buildTailoredResumeDocxBuffer(tailored, true);
+      const safeCompany = job.company.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+      const safeRole = job.title.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 36);
+      const fileName = `${tailored.candidateName.replace(/[^a-zA-Z0-9]+/g, '_')}_${safeCompany}_${safeRole}_Tailored.docx`;
+
+      res.json({
+        tailored,
+        docxBase64: redlinedBuffer.toString('base64'),
+        fileName,
+      });
+    } catch (error: unknown) {
+      console.error('Error in POST /api/resumes/tailor:', error);
+      const errObj = error as { status?: number; message?: string };
+      const statusCode =
+        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
+          ? errObj.status
+          : 500;
+      res.status(statusCode).json({
+        error: errObj?.message || 'Could not tailor resume for this job.',
+      });
+    }
+  });
+
+  // Export an already-tailored resume as redlined (edits in red) or clean (all black) 1-page .docx
+  app.post('/api/resumes/export-docx', async (req, res) => {
+    try {
+      const { tailored, highlightEditsInRed } = req.body as {
+        tailored?: TailoredResumeDocument;
+        highlightEditsInRed?: boolean;
+      };
+      if (!tailored || !Array.isArray(tailored.sections)) {
+        res.status(400).json({ error: 'Valid tailored resume payload is required.' });
+        return;
+      }
+      const buffer = await buildTailoredResumeDocxBuffer(
+        tailored,
+        highlightEditsInRed !== false
+      );
+      res.json({
+        docxBase64: buffer.toString('base64'),
+      });
+    } catch (error: unknown) {
+      console.error('Error in POST /api/resumes/export-docx:', error);
+      const errObj = error as { message?: string };
+      res.status(500).json({
+        error: errObj?.message || 'Could not export tailored .docx.',
+      });
+    }
+  });
+
+  if (!isProduction) {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distDir = path.resolve(__dirname, 'dist');
+    app.use(express.static(distDir));
+    app.get('*', (_req, res) => {
+      const indexPath = path.join(distDir, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        res.status(404).send('Build output not found.');
+      }
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Meridian server running on http://0.0.0.0:${PORT}`);
+  });
+}
+
+startServer().catch((err) => {
+  console.error('Failed to start Meridian server:', err);
+  process.exit(1);
+});
