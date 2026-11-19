@@ -14,6 +14,7 @@ import {
 import {
   DislikeReason,
   EmploymentType,
+  JobPriority,
   JobRecord,
   JobSource,
   LocationType,
@@ -27,8 +28,27 @@ import {
 import { DislikeReasonPopover } from './DislikeReasonPopover';
 
 type TableTab = 'new' | 'active' | 'all' | 'archived';
-type SortField = 'matchScore' | 'discoveredAt' | 'salaryMax' | 'company';
+type SortField = 'matchScore' | 'discoveredAt' | 'salaryMax' | 'company' | 'priority';
 type SortDirection = 'asc' | 'desc';
+
+const PRIORITY_RANK: Record<JobPriority, number> = {
+  high: 3,
+  medium: 2,
+  low: 1,
+};
+
+function prioritySelectClass(priority?: JobPriority): string {
+  switch (priority) {
+    case 'high':
+      return 'text-red-700 font-semibold bg-red-50/70 border-red-200 hover:border-red-300';
+    case 'medium':
+      return 'text-amber-700 font-medium bg-amber-50/70 border-amber-200 hover:border-amber-300';
+    case 'low':
+      return 'text-blue-700 font-medium bg-blue-50/60 border-blue-200 hover:border-blue-300';
+    default:
+      return 'text-zinc-400 bg-white border-zinc-200 hover:border-zinc-300 hover:text-zinc-600';
+  }
+}
 
 interface TableViewProps {
   jobs: JobRecord[];
@@ -41,6 +61,7 @@ interface TableViewProps {
   onRestoreJob: (jobId: string) => void;
   onDeleteJob: (jobId: string) => void;
   onToggleMbaRole: (jobId: string, isMbaRole: boolean) => void;
+  onChangePriority: (jobId: string, priority: JobPriority | null) => void;
   onOpenAddByUrl?: () => void;
   onMoveUntitledToTargetCompanies?: () => void;
   onRunAgent: () => void;
@@ -83,6 +104,7 @@ export function TableView({
   onRestoreJob,
   onDeleteJob,
   onToggleMbaRole,
+  onChangePriority,
   onOpenAddByUrl,
   onMoveUntitledToTargetCompanies,
   onRunAgent,
@@ -93,6 +115,7 @@ export function TableView({
   const [search, setSearch] = useState('');
   const [locationFilter, setLocationFilter] = useState<'all' | LocationType>('all');
   const [employmentTypeFilter, setEmploymentTypeFilter] = useState<'all' | EmploymentType>('all');
+  const [priorityFilter, setPriorityFilter] = useState<'all' | JobPriority | 'none'>('all');
   const [mbaOnly, setMbaOnly] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [sortField, setSortField] = useState<SortField>('discoveredAt');
@@ -130,6 +153,13 @@ export function TableView({
           );
           if (normalizedType !== employmentTypeFilter) return false;
         }
+        if (priorityFilter !== 'all') {
+          if (priorityFilter === 'none') {
+            if (job.priority) return false;
+          } else if (job.priority !== priorityFilter) {
+            return false;
+          }
+        }
         if (mbaOnly) {
           const isMba = job.isMbaRole ?? detectIsMbaRole(job.title);
           if (!isMba) return false;
@@ -142,7 +172,7 @@ export function TableView({
           }
         }
         if (q) {
-          const haystack = `${job.title} ${job.company} ${job.location} ${job.employmentType || ''} ${job.skills.join(' ')} ${job.sourceName}`.toLowerCase();
+          const haystack = `${job.title} ${job.company} ${job.location} ${job.employmentType || ''} ${job.priority || ''} ${job.skills.join(' ')} ${job.sourceName}`.toLowerCase();
           if (!haystack.includes(q)) return false;
         }
         return true;
@@ -153,7 +183,12 @@ export function TableView({
           if (a.isNew !== b.isNew) return a.isNew ? -1 : 1;
         }
         let cmp = 0;
-        if (sortField === 'matchScore') {
+        if (sortField === 'priority') {
+          const rankA = a.priority ? PRIORITY_RANK[a.priority] : 0;
+          const rankB = b.priority ? PRIORITY_RANK[b.priority] : 0;
+          cmp = rankA - rankB;
+          if (cmp === 0) cmp = a.matchScore - b.matchScore;
+        } else if (sortField === 'matchScore') {
           cmp = a.matchScore - b.matchScore;
         } else if (sortField === 'salaryMax') {
           cmp = (a.salaryMax ?? 0) - (b.salaryMax ?? 0);
@@ -170,6 +205,7 @@ export function TableView({
     search,
     locationFilter,
     employmentTypeFilter,
+    priorityFilter,
     mbaOnly,
     sourceFilter,
     sortField,
@@ -292,6 +328,21 @@ export function TableView({
             ))}
           </select>
 
+          <select
+            aria-label="Filter by priority"
+            value={priorityFilter}
+            onChange={(e) =>
+              setPriorityFilter(e.target.value as 'all' | JobPriority | 'none')
+            }
+            className="h-9 px-2.5 text-xs bg-white border border-zinc-200 rounded-md text-zinc-700 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+          >
+            <option value="all">All priorities</option>
+            <option value="high">High priority</option>
+            <option value="medium">Medium priority</option>
+            <option value="low">Low priority</option>
+            <option value="none">No priority</option>
+          </select>
+
           <label className="inline-flex items-center gap-1.5 h-9 px-2.5 text-xs text-zinc-700 bg-white border border-zinc-200 rounded-md cursor-pointer select-none whitespace-nowrap">
             <input
               type="checkbox"
@@ -377,6 +428,16 @@ export function TableView({
             <thead>
               <tr className="border-b border-zinc-200 bg-zinc-50/70 text-[11px] font-medium text-zinc-500">
                 <th className="py-2.5 pl-4 pr-3 w-28 whitespace-nowrap">Status</th>
+                <th className="py-2.5 px-3 w-24 whitespace-nowrap">
+                  <button
+                    type="button"
+                    onClick={() => toggleSort('priority')}
+                    className="inline-flex items-center gap-1 hover:text-zinc-900 cursor-pointer"
+                  >
+                    <span>Priority</span>
+                    <ArrowUpDown className="w-3 h-3" />
+                  </button>
+                </th>
                 <th className="py-2.5 px-3 min-w-[260px]">
                   <button
                     type="button"
@@ -427,7 +488,7 @@ export function TableView({
             <tbody className="divide-y divide-zinc-100 text-[13px]">
               {isAgentRunning && (
                 <tr className="bg-blue-50/30 animate-pulse">
-                  <td colSpan={10} className="py-3 px-4 text-xs text-blue-700">
+                  <td colSpan={11} className="py-3 px-4 text-xs text-blue-700">
                     Scanning configured ATS feeds, checking Target Companies, and enriching incomplete role details...
                   </td>
                 </tr>
@@ -435,7 +496,7 @@ export function TableView({
 
               {filteredJobs.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="py-12 px-4 text-center">
+                  <td colSpan={11} className="py-12 px-4 text-center">
                     <p className="text-sm font-medium text-zinc-900">
                       {tab === 'new'
                         ? 'Inbox clear — all newly pulled roles have been triaged.'
@@ -471,6 +532,7 @@ export function TableView({
                             setSearch('');
                             setLocationFilter('all');
                             setEmploymentTypeFilter('all');
+                            setPriorityFilter('all');
                             setMbaOnly(false);
                             setSourceFilter('all');
                             setTab('active');
@@ -521,6 +583,34 @@ export function TableView({
                             {STAGE_LABEL[job.stage]}
                           </span>
                         </div>
+                      </td>
+
+                      {/* Priority */}
+                      <td
+                        className="py-3 px-3 whitespace-nowrap align-middle"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <select
+                          aria-label={`Priority for ${job.title} at ${job.company}`}
+                          value={job.priority ?? ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            onChangePriority(
+                              job.id,
+                              val === 'high' || val === 'medium' || val === 'low'
+                                ? val
+                                : null
+                            );
+                          }}
+                          className={`h-7 px-2 text-[11.5px] rounded border transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-600/20 ${prioritySelectClass(
+                            job.priority
+                          )}`}
+                        >
+                          <option value="">—</option>
+                          <option value="high">High</option>
+                          <option value="medium">Medium</option>
+                          <option value="low">Low</option>
+                        </select>
                       </td>
 
                       {/* Role & Company */}

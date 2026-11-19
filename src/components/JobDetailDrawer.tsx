@@ -11,9 +11,11 @@ import {
   ExternalLink,
   FilePenLine,
   FileText,
+  Link2,
   Lock,
   Pencil,
   Plus,
+  RefreshCw,
   RotateCcw,
   Sparkles,
   ThumbsDown,
@@ -35,13 +37,16 @@ import {
   selectBestCoverLetterSampleForJob,
   selectBestResumeForJob,
 } from '../lib/resumeClient';
+import type { JobDetailsUpdatePatch } from '../lib/firestoreStore';
 import {
   CareerExperienceItem,
   CoverLetterSample,
   DislikeReason,
   GeneratedCoverLetter,
   JobEvent,
+  JobPriority,
   JobRecord,
+  LocationType,
   NetworkingChannel,
   NetworkingContact,
   NetworkingContactSentiment,
@@ -51,6 +56,33 @@ import {
   TailoredResumeDocument,
 } from '../types/job';
 import { DislikeReasonPopover } from './DislikeReasonPopover';
+
+function parseSalaryBoundsFromLabel(label: string): {
+  salaryMin: number | null;
+  salaryMax: number | null;
+} {
+  const clean = label.trim();
+  if (!clean || /not listed|unspecified|n\/a|tbd/i.test(clean)) {
+    return { salaryMin: null, salaryMax: null };
+  }
+  const matches = Array.from(clean.matchAll(/\$?\s*(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*([kK])?/g));
+  const values: number[] = [];
+  for (const m of matches) {
+    const rawNum = parseFloat(m[1].replace(/,/g, ''));
+    if (!Number.isFinite(rawNum)) continue;
+    const isK = Boolean(m[2]);
+    const val = isK ? Math.round(rawNum * 1000) : Math.round(rawNum);
+    if (val >= 20000 && val <= 5000000) {
+      values.push(val);
+    }
+  }
+  if (values.length === 0) return { salaryMin: null, salaryMax: null };
+  if (values.length === 1) return { salaryMin: values[0], salaryMax: values[0] };
+  return {
+    salaryMin: Math.min(values[0], values[1]),
+    salaryMax: Math.max(values[0], values[1]),
+  };
+}
 
 interface JobDetailDrawerProps {
   job: JobRecord | null;
@@ -93,8 +125,10 @@ interface JobDetailDrawerProps {
   onMoveStage: (jobId: string, nextStage: PipelineStage) => void;
   onUpdateJobAttributes: (
     jobId: string,
-    patch: { employmentType?: string; isMbaRole?: boolean }
+    patch: { employmentType?: string; isMbaRole?: boolean; priority?: JobPriority | null }
   ) => void;
+  onUpdateJobDetails: (jobId: string, patch: JobDetailsUpdatePatch) => void;
+  onExtractDetailsFromUrl: (jobUrl: string, stage: PipelineStage) => Promise<JobRecord>;
   onUpdateNotes: (jobId: string, notes: string) => void;
   onUpdateFullDescription: (jobId: string, fullDescription: string) => void;
   onFetchFullDescription: (jobId: string, jobUrl: string) => Promise<void>;
@@ -360,6 +394,8 @@ export function JobDetailDrawer({
   onClose,
   onMoveStage,
   onUpdateJobAttributes,
+  onUpdateJobDetails,
+  onExtractDetailsFromUrl,
   onUpdateNotes,
   onUpdateFullDescription,
   onFetchFullDescription,
@@ -374,6 +410,30 @@ export function JobDetailDrawer({
   const [notesDraft, setNotesDraft] = useState('');
   const [dislikeOpen, setDislikeOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // Full role details edit & URL autopopulate state
+  const [isEditingDetails, setIsEditingDetails] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editCompany, setEditCompany] = useState('');
+  const [editJobUrl, setEditJobUrl] = useState('');
+  const [editCompanyDomain, setEditCompanyDomain] = useState('');
+  const [editSalaryLabel, setEditSalaryLabel] = useState('');
+  const [editSalaryMin, setEditSalaryMin] = useState<number | null>(null);
+  const [editSalaryMax, setEditSalaryMax] = useState<number | null>(null);
+  const [editLocation, setEditLocation] = useState('');
+  const [editLocationType, setEditLocationType] = useState<LocationType>('Hybrid');
+  const [editEmploymentType, setEditEmploymentType] = useState('Full-time');
+  const [editIsMbaRole, setEditIsMbaRole] = useState(false);
+  const [editPriority, setEditPriority] = useState<JobPriority | ''>('');
+  const [editDeadlineAt, setEditDeadlineAt] = useState('');
+  const [editSkillsText, setEditSkillsText] = useState('');
+  const [editSummary, setEditSummary] = useState('');
+  const [editFullDescription, setEditFullDescription] = useState('');
+  const [editMatchScore, setEditMatchScore] = useState<number | undefined>(undefined);
+  const [editMatchReason, setEditMatchReason] = useState<string | undefined>(undefined);
+  const [isPopulatingFromUrl, setIsPopulatingFromUrl] = useState(false);
+  const [populateError, setPopulateError] = useState<string | null>(null);
+  const [populateSuccess, setPopulateSuccess] = useState<string | null>(null);
 
   // Full job description UI state
   const [jdExpanded, setJdExpanded] = useState(true);
@@ -438,6 +498,10 @@ export function JobDetailDrawer({
       setJdDraft(job.fullDescription || job.summary || '');
       setEditingJd(false);
       setJdExpanded(true);
+      setIsEditingDetails(false);
+      setPopulateError(null);
+      setPopulateSuccess(null);
+      setIsPopulatingFromUrl(false);
       setDislikeOpen(false);
       setConfirmDelete(false);
       setShowAddContact(false);
@@ -546,6 +610,193 @@ export function JobDetailDrawer({
     } finally {
       setIsFetchingJd(false);
     }
+  };
+
+  const openEditDetails = () => {
+    setActiveTab('overview');
+    setEditTitle(job.title);
+    setEditCompany(job.company);
+    setEditJobUrl(job.jobUrl || '');
+    setEditCompanyDomain(job.companyDomain || '');
+    setEditSalaryLabel(job.salaryLabel || '');
+    setEditSalaryMin(job.salaryMin ?? null);
+    setEditSalaryMax(job.salaryMax ?? null);
+    setEditLocation(job.location || '');
+    setEditLocationType(job.locationType);
+    setEditEmploymentType(normalizedEmploymentType);
+    setEditIsMbaRole(isMbaRole);
+    setEditPriority(job.priority ?? '');
+    setEditDeadlineAt(job.deadlineAt ?? '');
+    setEditSkillsText(job.skills.join(', '));
+    setEditSummary(job.summary || '');
+    setEditFullDescription(job.fullDescription || '');
+    setEditMatchScore(undefined);
+    setEditMatchReason(undefined);
+    setPopulateError(null);
+    setPopulateSuccess(null);
+    setIsEditingDetails(true);
+  };
+
+  const handlePopulateFromUrl = async () => {
+    const rawUrl = editJobUrl.trim();
+    if (!rawUrl) {
+      setPopulateError('Enter a public job posting URL first.');
+      return;
+    }
+    const normalizedUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+    setEditJobUrl(normalizedUrl);
+    setPopulateError(null);
+    setPopulateSuccess(null);
+    setIsPopulatingFromUrl(true);
+    try {
+      const extracted = await onExtractDetailsFromUrl(normalizedUrl, job.stage);
+      if (extracted.title && extracted.title.trim()) {
+        setEditTitle(extracted.title.trim());
+      }
+      if (
+        extracted.company &&
+        extracted.company.trim() &&
+        extracted.company.trim().toLowerCase() !== 'unknown company'
+      ) {
+        setEditCompany(extracted.company.trim());
+      }
+      if (extracted.jobUrl) {
+        setEditJobUrl(extracted.jobUrl);
+      }
+      if (extracted.companyDomain) {
+        setEditCompanyDomain(extracted.companyDomain);
+      }
+      if (
+        extracted.salaryLabel &&
+        extracted.salaryLabel.trim() &&
+        extracted.salaryLabel.trim().toLowerCase() !== 'not listed'
+      ) {
+        setEditSalaryLabel(extracted.salaryLabel.trim());
+        setEditSalaryMin(extracted.salaryMin ?? null);
+        setEditSalaryMax(extracted.salaryMax ?? null);
+      }
+      if (
+        extracted.location &&
+        extracted.location.trim() &&
+        extracted.location.trim().toLowerCase() !== 'unspecified'
+      ) {
+        setEditLocation(extracted.location.trim());
+      }
+      if (extracted.locationType) {
+        setEditLocationType(extracted.locationType);
+      }
+      if (extracted.employmentType) {
+        setEditEmploymentType(
+          normalizeEmploymentType(
+            extracted.employmentType,
+            extracted.title,
+            extracted.summary
+          )
+        );
+      }
+      if (typeof extracted.isMbaRole === 'boolean') {
+        setEditIsMbaRole(extracted.isMbaRole);
+      }
+      if (extracted.deadlineAt) {
+        setEditDeadlineAt(extracted.deadlineAt);
+      }
+      if (Array.isArray(extracted.skills) && extracted.skills.length > 0) {
+        setEditSkillsText(extracted.skills.join(', '));
+      }
+      if (extracted.summary && extracted.summary.trim()) {
+        setEditSummary(extracted.summary.trim());
+      }
+      if (extracted.fullDescription && extracted.fullDescription.trim()) {
+        setEditFullDescription(extracted.fullDescription.trim());
+      }
+      if (typeof extracted.matchScore === 'number') {
+        setEditMatchScore(extracted.matchScore);
+      }
+      if (extracted.matchReason && extracted.matchReason.trim()) {
+        setEditMatchReason(extracted.matchReason.trim());
+      }
+      setPopulateSuccess(
+        'Auto-populated role details from the URL. Review any fields below and click Save Changes.'
+      );
+    } catch (err: unknown) {
+      setPopulateError(
+        err instanceof Error
+          ? err.message
+          : 'Could not read that URL. Check that it is a public posting link or edit the fields manually.'
+      );
+    } finally {
+      setIsPopulatingFromUrl(false);
+    }
+  };
+
+  const handleSaveEditedDetails = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanTitle = editTitle.trim() || job.title;
+    const cleanCompany = editCompany.trim() || job.company;
+    const rawUrl = editJobUrl.trim();
+    const cleanUrl = rawUrl
+      ? /^https?:\/\//i.test(rawUrl)
+        ? rawUrl
+        : `https://${rawUrl}`
+      : '';
+
+    let derivedDomain = editCompanyDomain.trim();
+    if (cleanUrl) {
+      try {
+        derivedDomain = new URL(cleanUrl).hostname.replace(/^www\./, '');
+      } catch {
+        // Keep existing domain
+      }
+    }
+
+    const cleanSalaryLabel = editSalaryLabel.trim() || 'Not listed';
+    const parsedBounds =
+      cleanSalaryLabel !== (job.salaryLabel || '')
+        ? parseSalaryBoundsFromLabel(cleanSalaryLabel)
+        : { salaryMin: editSalaryMin, salaryMax: editSalaryMax };
+    const finalSalaryMin =
+      parsedBounds.salaryMin !== null ? parsedBounds.salaryMin : editSalaryMin;
+    const finalSalaryMax =
+      parsedBounds.salaryMax !== null ? parsedBounds.salaryMax : editSalaryMax;
+
+    const skillsList = editSkillsText
+      .split(/[,;\n]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 25);
+
+    const patch: JobDetailsUpdatePatch = {
+      title: cleanTitle,
+      company: cleanCompany,
+      companyDomain: derivedDomain,
+      jobUrl: cleanUrl,
+      salaryLabel: cleanSalaryLabel,
+      salaryMin: finalSalaryMin,
+      salaryMax: finalSalaryMax,
+      location: editLocation.trim() || 'Unspecified',
+      locationType: editLocationType,
+      employmentType: editEmploymentType,
+      isMbaRole: editIsMbaRole,
+      priority:
+        editPriority === 'high' || editPriority === 'medium' || editPriority === 'low'
+          ? editPriority
+          : null,
+      deadlineAt: editDeadlineAt.trim() || null,
+      skills: skillsList,
+      summary: editSummary.trim(),
+      ...(editFullDescription.trim()
+        ? { fullDescription: editFullDescription.trim() }
+        : {}),
+      ...(typeof editMatchScore === 'number' && editMatchScore !== job.matchScore
+        ? { previousMatchScore: job.matchScore, matchScore: editMatchScore }
+        : {}),
+      ...(editMatchReason ? { matchReason: editMatchReason } : {}),
+    };
+
+    onUpdateJobDetails(job.id, patch);
+    setIsEditingDetails(false);
+    setPopulateError(null);
+    setPopulateSuccess(null);
   };
 
   const handleAddContact = (e: React.FormEvent) => {
@@ -993,14 +1244,36 @@ export function JobDetailDrawer({
             </h2>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close role details"
-            className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded-md cursor-pointer shrink-0"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                if (isEditingDetails) {
+                  setIsEditingDetails(false);
+                  setPopulateError(null);
+                  setPopulateSuccess(null);
+                } else {
+                  openEditDetails();
+                }
+              }}
+              className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors cursor-pointer ${
+                isEditingDetails
+                  ? 'text-zinc-900 bg-zinc-100 border-zinc-300'
+                  : 'text-zinc-700 bg-white border-zinc-200 hover:bg-zinc-50 hover:text-zinc-950'
+              }`}
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              <span>{isEditingDetails ? 'Cancel Edit' : 'Edit'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close role details"
+              className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded-md cursor-pointer shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Drawer Tab Navigation */}
@@ -1069,22 +1342,67 @@ export function JobDetailDrawer({
             >
           {/* Quick Triage & Stage Bar */}
           <div className="flex flex-wrap items-center justify-between gap-3 pb-5 border-b border-zinc-100">
-            <div className="flex items-center gap-2">
-              <label htmlFor="detail-stage" className="text-xs font-medium text-zinc-500">
-                Stage
-              </label>
-              <select
-                id="detail-stage"
-                value={job.stage}
-                onChange={(e) => onMoveStage(job.id, e.target.value as PipelineStage)}
-                className="h-8 px-2.5 text-xs font-medium bg-white border border-zinc-200 rounded-md text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
-              >
-                {STAGES.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <label htmlFor="detail-stage" className="text-xs font-medium text-zinc-500">
+                  Stage
+                </label>
+                <select
+                  id="detail-stage"
+                  value={job.stage}
+                  onChange={(e) => onMoveStage(job.id, e.target.value as PipelineStage)}
+                  className="h-8 px-2.5 text-xs font-medium bg-white border border-zinc-200 rounded-md text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                >
+                  {STAGES.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-medium text-zinc-500">Priority</span>
+                <div
+                  role="group"
+                  aria-label="Role priority"
+                  className="inline-flex items-center bg-zinc-100 p-0.5 rounded-md border border-zinc-200/80"
+                >
+                  {(
+                    [
+                      { id: 'high', label: 'High', activeClass: 'bg-red-600 text-white' },
+                      { id: 'medium', label: 'Med', activeClass: 'bg-amber-500 text-white' },
+                      { id: 'low', label: 'Low', activeClass: 'bg-blue-600 text-white' },
+                    ] as const
+                  ).map((opt) => {
+                    const active = job.priority === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        aria-pressed={active}
+                        title={
+                          active
+                            ? `Clear ${opt.label} priority`
+                            : `Set ${opt.label} priority`
+                        }
+                        onClick={() =>
+                          onUpdateJobAttributes(job.id, {
+                            priority: active ? null : opt.id,
+                          })
+                        }
+                        className={`px-2 py-1 text-[11px] font-medium rounded transition-colors cursor-pointer ${
+                          active
+                            ? opt.activeClass
+                            : 'text-zinc-600 hover:text-zinc-950 hover:bg-white/70'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
 
             <div className="flex items-center gap-2 relative">
@@ -1174,6 +1492,310 @@ export function JobDetailDrawer({
             </div>
           </div>
 
+          {/* Inline Edit Role Details & URL Auto-Populate Form */}
+          {isEditingDetails && (
+            <form
+              onSubmit={handleSaveEditedDetails}
+              className="p-4 bg-zinc-50/90 border border-zinc-200 rounded-lg space-y-4"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <Pencil className="w-3.5 h-3.5 text-blue-600" />
+                  <h3 className="text-xs font-semibold text-zinc-950">
+                    Edit Role Details
+                  </h3>
+                </div>
+                <span className="text-[11px] text-zinc-500">
+                  Paste a posting URL to auto-fill, or edit any field
+                </span>
+              </div>
+
+              {/* Posting URL + Auto-Populate */}
+              <div className="p-3 bg-white border border-zinc-200 rounded-md space-y-2">
+                <label
+                  htmlFor="edit-job-url"
+                  className="block text-[11px] font-medium text-zinc-700"
+                >
+                  Job Posting URL
+                </label>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <div className="relative flex-1">
+                    <Link2 className="w-3.5 h-3.5 text-zinc-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      id="edit-job-url"
+                      type="text"
+                      value={editJobUrl}
+                      onChange={(e) => setEditJobUrl(e.target.value)}
+                      placeholder="https://boards.greenhouse.io/... or company careers URL"
+                      className="w-full h-8 pl-8 pr-2.5 text-xs font-mono bg-white border border-zinc-200 rounded-md text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isPopulatingFromUrl || !editJobUrl.trim()}
+                    onClick={() => void handlePopulateFromUrl()}
+                    className="inline-flex items-center justify-center gap-1.5 h-8 px-3 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 rounded-md whitespace-nowrap shrink-0 cursor-pointer disabled:cursor-not-allowed"
+                  >
+                    {isPopulatingFromUrl ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="w-3.5 h-3.5" />
+                    )}
+                    <span>
+                      {isPopulatingFromUrl ? 'Pulling details...' : 'Auto-Populate from URL'}
+                    </span>
+                  </button>
+                </div>
+
+                {populateError && (
+                  <div className="p-2 bg-red-50 border border-red-200 rounded text-[11.5px] text-red-700 flex items-start gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>{populateError}</span>
+                  </div>
+                )}
+
+                {populateSuccess && (
+                  <div className="p-2 bg-emerald-50 border border-emerald-200 rounded text-[11.5px] text-emerald-800 flex items-start gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>{populateSuccess}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Core Role Fields */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label
+                    htmlFor="edit-job-title"
+                    className="block text-[11px] font-medium text-zinc-600 mb-1"
+                  >
+                    Role Title
+                  </label>
+                  <input
+                    id="edit-job-title"
+                    type="text"
+                    required
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    className="w-full h-8 px-2.5 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="edit-job-company"
+                    className="block text-[11px] font-medium text-zinc-600 mb-1"
+                  >
+                    Company
+                  </label>
+                  <input
+                    id="edit-job-company"
+                    type="text"
+                    required
+                    value={editCompany}
+                    onChange={(e) => setEditCompany(e.target.value)}
+                    className="w-full h-8 px-2.5 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="edit-job-salary"
+                    className="block text-[11px] font-medium text-zinc-600 mb-1"
+                  >
+                    Compensation
+                  </label>
+                  <input
+                    id="edit-job-salary"
+                    type="text"
+                    value={editSalaryLabel}
+                    onChange={(e) => setEditSalaryLabel(e.target.value)}
+                    placeholder="e.g., $180k - $215k"
+                    className="w-full h-8 px-2.5 text-xs font-mono bg-white border border-zinc-200 rounded-md text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="edit-job-location"
+                    className="block text-[11px] font-medium text-zinc-600 mb-1"
+                  >
+                    Location
+                  </label>
+                  <input
+                    id="edit-job-location"
+                    type="text"
+                    value={editLocation}
+                    onChange={(e) => setEditLocation(e.target.value)}
+                    placeholder="e.g., Chicago, IL"
+                    className="w-full h-8 px-2.5 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="edit-job-workmode"
+                    className="block text-[11px] font-medium text-zinc-600 mb-1"
+                  >
+                    Work Mode
+                  </label>
+                  <select
+                    id="edit-job-workmode"
+                    value={editLocationType}
+                    onChange={(e) => setEditLocationType(e.target.value as LocationType)}
+                    className="w-full h-8 px-2.5 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                  >
+                    <option value="Remote">Remote</option>
+                    <option value="Hybrid">Hybrid</option>
+                    <option value="Onsite">Onsite</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="edit-job-employment"
+                    className="block text-[11px] font-medium text-zinc-600 mb-1"
+                  >
+                    Employment Type
+                  </label>
+                  <select
+                    id="edit-job-employment"
+                    value={editEmploymentType}
+                    onChange={(e) => setEditEmploymentType(e.target.value)}
+                    className="w-full h-8 px-2.5 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                  >
+                    {EMPLOYMENT_TYPES.map((et) => (
+                      <option key={et} value={et}>
+                        {et}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="edit-job-priority"
+                    className="block text-[11px] font-medium text-zinc-600 mb-1"
+                  >
+                    Priority
+                  </label>
+                  <select
+                    id="edit-job-priority"
+                    value={editPriority}
+                    onChange={(e) =>
+                      setEditPriority(e.target.value as JobPriority | '')
+                    }
+                    className="w-full h-8 px-2.5 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                  >
+                    <option value="">No priority</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="edit-job-deadline"
+                    className="block text-[11px] font-medium text-zinc-600 mb-1"
+                  >
+                    Application Deadline
+                  </label>
+                  <input
+                    id="edit-job-deadline"
+                    type="text"
+                    value={editDeadlineAt}
+                    onChange={(e) => setEditDeadlineAt(e.target.value)}
+                    placeholder="YYYY-MM-DD (leave blank for Rolling)"
+                    className="w-full h-8 px-2.5 text-xs font-mono bg-white border border-zinc-200 rounded-md text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                  />
+                </div>
+              </div>
+
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-zinc-800 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={editIsMbaRole}
+                  onChange={(e) => setEditIsMbaRole(e.target.checked)}
+                  className="rounded border-zinc-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                />
+                <span>MBA role</span>
+              </label>
+
+              <div>
+                <label
+                  htmlFor="edit-job-skills"
+                  className="block text-[11px] font-medium text-zinc-600 mb-1"
+                >
+                  Key Skills (comma-separated)
+                </label>
+                <input
+                  id="edit-job-skills"
+                  type="text"
+                  value={editSkillsText}
+                  onChange={(e) => setEditSkillsText(e.target.value)}
+                  placeholder="Product Strategy, GTM, SQL, B2B SaaS"
+                  className="w-full h-8 px-2.5 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="edit-job-summary"
+                  className="block text-[11px] font-medium text-zinc-600 mb-1"
+                >
+                  Role Summary
+                </label>
+                <textarea
+                  id="edit-job-summary"
+                  rows={2}
+                  value={editSummary}
+                  onChange={(e) => setEditSummary(e.target.value)}
+                  placeholder="Short role overview..."
+                  className="w-full p-2 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                />
+              </div>
+
+              {editFullDescription && (
+                <div>
+                  <label
+                    htmlFor="edit-job-fulldesc"
+                    className="block text-[11px] font-medium text-zinc-600 mb-1"
+                  >
+                    Full Job Description (populated from URL / editable)
+                  </label>
+                  <textarea
+                    id="edit-job-fulldesc"
+                    rows={4}
+                    value={editFullDescription}
+                    onChange={(e) => setEditFullDescription(e.target.value)}
+                    className="w-full p-2 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                  />
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-200/80">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsEditingDetails(false);
+                    setPopulateError(null);
+                    setPopulateSuccess(null);
+                  }}
+                  className="px-3 py-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-950 rounded-md cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-3.5 py-1.5 text-xs font-medium text-white bg-zinc-900 hover:bg-zinc-800 rounded-md cursor-pointer"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </form>
+          )}
+
           {/* Structured Key Attributes */}
           <dl className="grid grid-cols-2 gap-y-3.5 gap-x-6 text-xs">
             <div>
@@ -1243,19 +1865,37 @@ export function JobDetailDrawer({
             </div>
             <div>
               <dt className="text-zinc-500">Source Link</dt>
-              <dd className="mt-0.5">
+              <dd className="mt-0.5 flex flex-wrap items-center gap-2">
                 {job.jobUrl ? (
-                  <a
-                    href={job.jobUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-blue-600 hover:underline"
-                  >
-                    <span>Open posting</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
+                  <>
+                    <a
+                      href={job.jobUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-blue-600 hover:underline"
+                    >
+                      <span>Open posting</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                    {!isEditingDetails && (
+                      <button
+                        type="button"
+                        onClick={openEditDetails}
+                        className="text-[11px] text-zinc-500 hover:text-zinc-900 underline underline-offset-2 cursor-pointer"
+                      >
+                        Edit / Re-pull
+                      </button>
+                    )}
+                  </>
                 ) : (
-                  <span className="text-zinc-400">No URL listed</span>
+                  <button
+                    type="button"
+                    onClick={openEditDetails}
+                    className="inline-flex items-center gap-1 text-blue-600 hover:underline font-medium cursor-pointer"
+                  >
+                    <Link2 className="w-3 h-3" />
+                    <span>Add URL &amp; Auto-fill</span>
+                  </button>
                 )}
               </dd>
             </div>

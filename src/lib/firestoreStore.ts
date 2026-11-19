@@ -22,6 +22,7 @@ import type {
   ImportBatchRecord,
   JobEvent,
   JobEnrichmentPatch,
+  JobPriority,
   JobRecord,
   JobSource,
   LearnedRule,
@@ -107,6 +108,12 @@ function validLocType(l: unknown): LocationType {
 
 function validAts(a: unknown): AtsType {
   return VALID_ATS.includes(a as AtsType) ? (a as AtsType) : 'Custom Markdown';
+}
+
+const VALID_PRIORITIES: JobPriority[] = ['high', 'medium', 'low'];
+
+function validPriority(p: unknown): JobPriority | undefined {
+  return VALID_PRIORITIES.includes(p as JobPriority) ? (p as JobPriority) : undefined;
 }
 
 const VALID_NET_CHANNELS: NetworkingChannel[] = [
@@ -320,6 +327,7 @@ export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspa
       typeof j.isMbaRole === 'boolean'
         ? j.isMbaRole
         : /\bmba\b/i.test(String(j.title || '')),
+    priority: validPriority(j.priority),
     sourceId: clampStr(j.sourceId, 128),
     sourceName: clampStr(j.sourceName, 160),
     atsType: validAts(j.atsType),
@@ -620,6 +628,9 @@ function serializeJobForCreate(uid: string, job: JobRecord): {
     typeof job.isMbaRole === 'boolean'
       ? job.isMbaRole
       : /\bmba\b/i.test(job.title || '');
+  if (validPriority(job.priority)) {
+    data.priority = job.priority;
+  }
   if (typeof job.fullDescription === 'string' && job.fullDescription.trim()) {
     data.fullDescription = clampStr(job.fullDescription, 16000);
   }
@@ -740,7 +751,11 @@ export async function updateJobFullDescriptionInCloud(
 export async function updateJobAttributesInCloud(
   uid: string,
   jobId: string,
-  patch: { employmentType?: string; isMbaRole?: boolean }
+  patch: {
+    employmentType?: string;
+    isMbaRole?: boolean;
+    priority?: JobPriority | null;
+  }
 ): Promise<void> {
   const id = safeId(jobId, 'job');
   const path = `users/${uid}/jobs/${id}`;
@@ -751,6 +766,118 @@ export async function updateJobAttributesInCloud(
   if (typeof patch.isMbaRole === 'boolean') {
     payload.isMbaRole = patch.isMbaRole;
   }
+  if (patch.priority === null) {
+    payload.priority = null;
+  } else if (patch.priority !== undefined && validPriority(patch.priority)) {
+    payload.priority = patch.priority;
+  }
+  try {
+    await updateDoc(doc(db, 'users', uid, 'jobs', id), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export interface JobDetailsUpdatePatch {
+  title?: string;
+  company?: string;
+  companyDomain?: string;
+  salaryMin?: number | null;
+  salaryMax?: number | null;
+  salaryLabel?: string;
+  location?: string;
+  locationType?: LocationType;
+  employmentType?: string;
+  isMbaRole?: boolean;
+  priority?: JobPriority | null;
+  jobUrl?: string;
+  deadlineAt?: string | null;
+  skills?: string[];
+  summary?: string;
+  fullDescription?: string;
+  matchScore?: number;
+  previousMatchScore?: number;
+  matchReason?: string;
+}
+
+export async function updateJobDetailsInCloud(
+  uid: string,
+  jobId: string,
+  patch: JobDetailsUpdatePatch
+): Promise<void> {
+  const id = safeId(jobId, 'job');
+  const path = `users/${uid}/jobs/${id}`;
+  const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+
+  if (typeof patch.title === 'string' && patch.title.trim()) {
+    payload.title = clampStr(patch.title.trim(), 200);
+  }
+  if (typeof patch.company === 'string' && patch.company.trim()) {
+    payload.company = clampStr(patch.company.trim(), 160);
+  }
+  if (typeof patch.companyDomain === 'string') {
+    payload.companyDomain = clampStr(patch.companyDomain.trim(), 160);
+  }
+  if (patch.salaryMin !== undefined) {
+    payload.salaryMin =
+      typeof patch.salaryMin === 'number' && Number.isFinite(patch.salaryMin)
+        ? Math.max(0, Math.min(5000000, Math.round(patch.salaryMin)))
+        : null;
+  }
+  if (patch.salaryMax !== undefined) {
+    payload.salaryMax =
+      typeof patch.salaryMax === 'number' && Number.isFinite(patch.salaryMax)
+        ? Math.max(0, Math.min(5000000, Math.round(patch.salaryMax)))
+        : null;
+  }
+  if (typeof patch.salaryLabel === 'string') {
+    payload.salaryLabel = clampStr(patch.salaryLabel.trim() || 'Not listed', 80);
+  }
+  if (typeof patch.location === 'string') {
+    payload.location = clampStr(patch.location.trim(), 160);
+  }
+  if (patch.locationType !== undefined) {
+    payload.locationType = validLocType(patch.locationType);
+  }
+  if (typeof patch.employmentType === 'string' && patch.employmentType.trim()) {
+    payload.employmentType = clampStr(patch.employmentType.trim(), 60);
+  }
+  if (typeof patch.isMbaRole === 'boolean') {
+    payload.isMbaRole = patch.isMbaRole;
+  }
+  if (patch.priority === null) {
+    payload.priority = null;
+  } else if (patch.priority !== undefined && validPriority(patch.priority)) {
+    payload.priority = patch.priority;
+  }
+  if (typeof patch.jobUrl === 'string') {
+    payload.jobUrl = clampStr(patch.jobUrl.trim(), 1000);
+  }
+  if (patch.deadlineAt !== undefined) {
+    payload.deadlineAt =
+      typeof patch.deadlineAt === 'string' && patch.deadlineAt.trim()
+        ? clampStr(patch.deadlineAt.trim(), 32)
+        : null;
+  }
+  if (Array.isArray(patch.skills)) {
+    payload.skills = clampStringList(patch.skills, 25);
+  }
+  if (typeof patch.summary === 'string') {
+    payload.summary = clampStr(patch.summary.trim(), 2000);
+  }
+  if (typeof patch.fullDescription === 'string') {
+    payload.fullDescription = clampStr(patch.fullDescription.trim(), 16000);
+  }
+  if (typeof patch.matchScore === 'number') {
+    payload.matchScore = clampScore(patch.matchScore);
+  }
+  if (typeof patch.previousMatchScore === 'number') {
+    payload.previousMatchScore = clampScore(patch.previousMatchScore);
+  }
+  if (typeof patch.matchReason === 'string') {
+    payload.matchReason = clampStr(patch.matchReason.trim(), 600);
+  }
+
   try {
     await updateDoc(doc(db, 'users', uid, 'jobs', id), payload);
   } catch (error) {

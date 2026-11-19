@@ -44,6 +44,7 @@ import {
   saveUserProfileToCloud,
   updateCareerContextInCloud,
   updateJobAttributesInCloud,
+  updateJobDetailsInCloud,
   updateJobFullDescriptionInCloud,
   updateJobNetworkingContactsInCloud,
   updateJobNotesInCloud,
@@ -59,9 +60,11 @@ import {
   upsertCoverLetterSampleInCloud,
   upsertRoleResumeInCloud,
 } from './lib/firestoreStore';
+import type { JobDetailsUpdatePatch } from './lib/firestoreStore';
 import type { ParsedTargetCompanyRow } from './lib/csvParser';
 import {
   clearGmailAccessToken,
+  getFirebaseIdToken,
   getGmailAccessToken,
   initGoogleAuth,
   signInWithGoogleAccount,
@@ -85,6 +88,7 @@ import {
   ImportBatchRecord,
   JobEnrichmentPatch,
   JobEvent,
+  JobPriority,
   JobRecord,
   JobSource,
   LearnedRule,
@@ -560,6 +564,7 @@ export default function App() {
   const [slackError, setSlackError] = useState<string | null>(null);
   const [slackAuthConfig, setSlackAuthConfig] = useState<{
     configured: boolean;
+    ownerRestricted: boolean;
     hasClientId: boolean;
     hasClientSecret: boolean;
     url: string | null;
@@ -569,6 +574,7 @@ export default function App() {
     sharedRedirectUri: string | null;
   }>({
     configured: false,
+    ownerRestricted: true,
     hasClientId: false,
     hasClientSecret: false,
     url: null,
@@ -618,14 +624,18 @@ export default function App() {
     });
   }, []);
 
-  // Pre-fetch fresh Slack OAuth URL & state so window.open runs synchronously on click (prevents popup blocking)
+  // Pre-fetch fresh Slack OAuth URL & state (server verifies Firebase ID token belongs to workspace owner)
   const refreshSlackAuthConfig = useCallback(async () => {
     try {
+      const idToken = await getFirebaseIdToken();
       const origin = encodeURIComponent(window.location.origin);
-      const res = await fetch(`/api/slack/auth/url?origin=${origin}`);
+      const res = await fetch(`/api/slack/auth/url?origin=${origin}`, {
+        headers: idToken ? { 'X-Firebase-Id-Token': idToken } : undefined,
+      });
       if (!res.ok) return;
       const data = (await res.json()) as {
         configured?: boolean;
+        ownerRestricted?: boolean;
         hasClientId?: boolean;
         hasClientSecret?: boolean;
         url?: string | null;
@@ -634,8 +644,15 @@ export default function App() {
         devRedirectUri?: string | null;
         sharedRedirectUri?: string | null;
       };
+      const restricted = Boolean(data.ownerRestricted);
+      if (restricted) {
+        slackTokenRef.current = null;
+        setSlackConnected(false);
+        setSlackTeamName(null);
+      }
       setSlackAuthConfig({
         configured: Boolean(data.configured),
+        ownerRestricted: restricted,
         hasClientId: Boolean(data.hasClientId),
         hasClientSecret: Boolean(data.hasClientSecret),
         url: data.url ?? null,
@@ -656,7 +673,7 @@ export default function App() {
         window.clearInterval(slackPollTimerRef.current);
       }
     };
-  }, [refreshSlackAuthConfig]);
+  }, [authUid, refreshSlackAuthConfig]);
 
   // Initialize Firebase Auth & load cloud workspace from Firestore on sign-in
   useEffect(() => {
@@ -1635,12 +1652,97 @@ export default function App() {
 
   const handleUpdateJobAttributes = (
     jobId: string,
-    patch: { employmentType?: string; isMbaRole?: boolean }
+    patch: { employmentType?: string; isMbaRole?: boolean; priority?: JobPriority | null }
   ) => {
     setJobs((prev) =>
-      prev.map((j) => (j.id === jobId ? { ...j, ...patch } : j))
+      prev.map((j) => {
+        if (j.id !== jobId) return j;
+        const next: JobRecord = {
+          ...j,
+          ...(patch.employmentType !== undefined
+            ? { employmentType: patch.employmentType }
+            : {}),
+          ...(patch.isMbaRole !== undefined ? { isMbaRole: patch.isMbaRole } : {}),
+          ...(patch.priority !== undefined
+            ? { priority: patch.priority === null ? undefined : patch.priority }
+            : {}),
+        };
+        return next;
+      })
     );
     persistCloud((uid) => updateJobAttributesInCloud(uid, jobId, patch));
+  };
+
+  const handleUpdateJobDetails = (jobId: string, patch: JobDetailsUpdatePatch) => {
+    setJobs((prev) =>
+      prev.map((j) => {
+        if (j.id !== jobId) return j;
+        return {
+          ...j,
+          ...(patch.title !== undefined ? { title: patch.title } : {}),
+          ...(patch.company !== undefined ? { company: patch.company } : {}),
+          ...(patch.companyDomain !== undefined
+            ? { companyDomain: patch.companyDomain }
+            : {}),
+          ...(patch.salaryMin !== undefined ? { salaryMin: patch.salaryMin } : {}),
+          ...(patch.salaryMax !== undefined ? { salaryMax: patch.salaryMax } : {}),
+          ...(patch.salaryLabel !== undefined
+            ? { salaryLabel: patch.salaryLabel }
+            : {}),
+          ...(patch.location !== undefined ? { location: patch.location } : {}),
+          ...(patch.locationType !== undefined
+            ? { locationType: patch.locationType }
+            : {}),
+          ...(patch.employmentType !== undefined
+            ? { employmentType: patch.employmentType }
+            : {}),
+          ...(patch.isMbaRole !== undefined ? { isMbaRole: patch.isMbaRole } : {}),
+          ...(patch.priority !== undefined
+            ? { priority: patch.priority === null ? undefined : patch.priority }
+            : {}),
+          ...(patch.jobUrl !== undefined ? { jobUrl: patch.jobUrl } : {}),
+          ...(patch.deadlineAt !== undefined ? { deadlineAt: patch.deadlineAt } : {}),
+          ...(patch.skills !== undefined ? { skills: patch.skills } : {}),
+          ...(patch.summary !== undefined ? { summary: patch.summary } : {}),
+          ...(patch.fullDescription !== undefined
+            ? { fullDescription: patch.fullDescription }
+            : {}),
+          ...(patch.matchScore !== undefined ? { matchScore: patch.matchScore } : {}),
+          ...(patch.previousMatchScore !== undefined
+            ? { previousMatchScore: patch.previousMatchScore }
+            : {}),
+          ...(patch.matchReason !== undefined
+            ? { matchReason: patch.matchReason }
+            : {}),
+        };
+      })
+    );
+    persistCloud((uid) => updateJobDetailsInCloud(uid, jobId, patch));
+    pushToast('Saved updated role details');
+  };
+
+  const handleExtractJobDetailsFromUrl = async (
+    jobUrl: string,
+    stage: PipelineStage
+  ): Promise<JobRecord> => {
+    const res = await fetch('/api/jobs/from-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jobUrl,
+        searchPrompt,
+        rules: rules.map((r) => ({ text: r.text, active: r.active })),
+        recentFeedback: buildRichFeedback(),
+        stage,
+      }),
+    });
+    const data = (await res.json()) as { job?: JobRecord; error?: string };
+    if (!res.ok || !data.job) {
+      throw new Error(
+        data.error || 'Could not extract job details from that URL.'
+      );
+    }
+    return data.job;
   };
 
   const handleUpdateNetworkingContacts = (
@@ -1953,11 +2055,16 @@ export default function App() {
       if (isSlackScanning) return;
       setIsSlackScanning(true);
       try {
+        const idToken = await getFirebaseIdToken();
+        if (!idToken) {
+          throw new Error('Sign in with the owner Google account to scan Slack channels.');
+        }
         const res = await fetch('/api/slack/scan', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
+            'X-Firebase-Id-Token': idToken,
           },
           body: JSON.stringify({
             channels: channelsOverride ?? intakeProfile.slackChannels,
@@ -2141,6 +2248,13 @@ export default function App() {
   // Synchronous click handler: calls window.open immediately without awaiting network first
   const handleConnectSlack = () => {
     setSlackError(null);
+    if (slackAuthConfig.ownerRestricted) {
+      const restrictedMsg =
+        'Slack integration is restricted to the workspace owner. Sign in with the owner Google account to connect Slack.';
+      setSlackError(restrictedMsg);
+      pushToast(restrictedMsg);
+      return;
+    }
     if (!slackAuthConfig.configured || !slackAuthConfig.url) {
       const missing: string[] = [];
       if (!slackAuthConfig.hasClientId) missing.push('SLACK_CLIENT_ID');
@@ -2206,7 +2320,12 @@ export default function App() {
           return;
         }
 
-        void fetch(`/api/slack/session?state=${encodeURIComponent(oauthState)}`)
+        void getFirebaseIdToken()
+          .then((idToken) =>
+            fetch(`/api/slack/session?state=${encodeURIComponent(oauthState)}`, {
+              headers: idToken ? { 'X-Firebase-Id-Token': idToken } : undefined,
+            })
+          )
           .then((r) => (r.ok ? r.json() : null))
           .then(
             (
@@ -3236,6 +3355,9 @@ export default function App() {
               onToggleMbaRole={(jobId, isMbaRole) =>
                 handleUpdateJobAttributes(jobId, { isMbaRole })
               }
+              onChangePriority={(jobId, priority) =>
+                handleUpdateJobAttributes(jobId, { priority })
+              }
               onOpenAddByUrl={() => openImportModal('url')}
               onMoveUntitledToTargetCompanies={handleMoveUntitledToTargetCompanies}
               onRunAgent={handleRunAgent}
@@ -3252,6 +3374,9 @@ export default function App() {
               onThumbsUp={handleThumbsUp}
               onThumbsDown={handleThumbsDown}
               onDeleteJob={handleDeleteJob}
+              onChangePriority={(jobId, priority) =>
+                handleUpdateJobAttributes(jobId, { priority })
+              }
             />
           )}
 
@@ -3291,6 +3416,7 @@ export default function App() {
               slackConnected={slackConnected}
               slackTeamName={slackTeamName}
               slackConfigured={slackAuthConfig.configured}
+              slackOwnerRestricted={slackAuthConfig.ownerRestricted}
               slackHasClientId={slackAuthConfig.hasClientId}
               slackHasClientSecret={slackAuthConfig.hasClientSecret}
               slackRedirectUri={slackAuthConfig.redirectUri}
@@ -3403,6 +3529,7 @@ export default function App() {
         slackConnected={slackConnected}
         slackTeamName={slackTeamName}
         slackConfigured={slackAuthConfig.configured}
+        slackOwnerRestricted={slackAuthConfig.ownerRestricted}
         slackHasClientId={slackAuthConfig.hasClientId}
         slackHasClientSecret={slackAuthConfig.hasClientSecret}
         slackRedirectUri={slackAuthConfig.redirectUri}
@@ -3456,6 +3583,8 @@ export default function App() {
         onSaveTailoredResult={handleSaveTailoredResult}
         onSaveCoverLetterResult={handleSaveCoverLetterResult}
         onUpdateJobAttributes={handleUpdateJobAttributes}
+        onUpdateJobDetails={handleUpdateJobDetails}
+        onExtractDetailsFromUrl={handleExtractJobDetailsFromUrl}
         onClose={() => setSelectedJobId(null)}
         onMoveStage={handleMoveStage}
         onUpdateNotes={handleUpdateNotes}

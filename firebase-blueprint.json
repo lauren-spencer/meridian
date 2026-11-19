@@ -185,6 +185,10 @@
         "isMbaRole": {
           "type": "boolean"
         },
+        "priority": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
         "sourceId": {
           "type": "string",
           "maxLength": 128

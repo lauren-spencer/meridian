@@ -10,6 +10,8 @@ export type LocationType = 'Remote' | 'Hybrid' | 'Onsite';
 
 export type EmploymentType = 'Full-time' | 'Internship' | 'Part-time' | 'Contract';
 
+export type JobPriority = 'high' | 'medium' | 'low';
+
 export type AtsType =
   | 'Greenhouse'
   | 'Lever'
@@ -193,6 +195,7 @@ export interface JobRecord {
   locationType: LocationType;
   employmentType?: string;
   isMbaRole?: boolean;
+  priority?: JobPriority;
   sourceId: string;
   sourceName: string;
   atsType: AtsType;

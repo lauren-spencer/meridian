@@ -50,6 +50,141 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
 
+// Load public Firebase Web API key so the server can cryptographically verify
+// Firebase ID tokens via Google Identity Toolkit without exposing any secrets.
+let firebaseWebApiKey = '';
+try {
+  const cfgPath = path.join(__dirname, 'firebase-applet-config.json');
+  if (fs.existsSync(cfgPath)) {
+    const parsedCfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as {
+      apiKey?: string;
+    };
+    firebaseWebApiKey = (parsedCfg.apiKey || '').trim();
+  }
+} catch {
+  firebaseWebApiKey = '';
+}
+
+const DEFAULT_SLACK_OWNER_EMAIL = 'laurenashspencer@gmail.com';
+
+function getAllowedSlackOwnerEmails(): Set<string> {
+  const raw =
+    process.env.SLACK_ALLOWED_EMAILS ||
+    process.env.SLACK_OWNER_EMAIL ||
+    DEFAULT_SLACK_OWNER_EMAIL;
+  const emails = raw
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  return new Set(emails.length > 0 ? emails : [DEFAULT_SLACK_OWNER_EMAIL]);
+}
+
+interface VerifiedFirebaseUser {
+  uid: string;
+  email: string;
+  emailVerified: boolean;
+}
+
+const verifiedIdTokenCache = new Map<
+  string,
+  { user: VerifiedFirebaseUser; expiresAt: number }
+>();
+
+async function verifyFirebaseIdToken(
+  idToken: string
+): Promise<VerifiedFirebaseUser | null> {
+  const trimmed = idToken.trim();
+  if (!trimmed || !firebaseWebApiKey) return null;
+
+  const cacheKey = crypto.createHash('sha256').update(trimmed).digest('hex');
+  const cached = verifiedIdTokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.user;
+  }
+
+  try {
+    const res = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(firebaseWebApiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: trimmed }),
+      }
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      users?: {
+        localId?: string;
+        email?: string;
+        emailVerified?: boolean;
+      }[];
+    };
+    const u = data.users?.[0];
+    if (!u?.localId || !u?.email) return null;
+    const verified: VerifiedFirebaseUser = {
+      uid: u.localId,
+      email: u.email.toLowerCase(),
+      emailVerified: Boolean(u.emailVerified),
+    };
+    verifiedIdTokenCache.set(cacheKey, {
+      user: verified,
+      expiresAt: Date.now() + 60_000,
+    });
+    if (verifiedIdTokenCache.size > 200) {
+      const now = Date.now();
+      for (const [k, v] of verifiedIdTokenCache.entries()) {
+        if (v.expiresAt <= now) verifiedIdTokenCache.delete(k);
+      }
+    }
+    return verified;
+  } catch {
+    return null;
+  }
+}
+
+async function verifySlackOwnerRequest(
+  req: express.Request
+): Promise<{
+  allowed: boolean;
+  user?: VerifiedFirebaseUser;
+  reason?: string;
+}> {
+  const headerToken = req.headers['x-firebase-id-token'];
+  const idToken =
+    typeof headerToken === 'string'
+      ? headerToken.trim()
+      : Array.isArray(headerToken)
+      ? (headerToken[0] || '').trim()
+      : '';
+
+  if (!idToken) {
+    return {
+      allowed: false,
+      reason:
+        'Slack integration is restricted to the workspace owner. Sign in with the owner Google account first.',
+    };
+  }
+
+  const user = await verifyFirebaseIdToken(idToken);
+  if (!user || !user.emailVerified) {
+    return {
+      allowed: false,
+      reason: 'Could not verify your Google account session. Please sign in again.',
+    };
+  }
+
+  const allowedEmails = getAllowedSlackOwnerEmails();
+  if (!allowedEmails.has(user.email)) {
+    return {
+      allowed: false,
+      reason:
+        'Slack API credentials on this deployment are private and restricted to the workspace owner.',
+    };
+  }
+
+  return { allowed: true, user };
+}
+
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '12mb' }));
@@ -380,12 +515,6 @@ async function startServer() {
         recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
       });
 
-      realtimeHub.broadcast('agent:completed', {
-        trigger: 'manual',
-        newJobs: output.newJobs,
-        runReport: output.runReport,
-      });
-
       res.json(output);
     } catch (error: unknown) {
       console.error('Error in POST /api/gmail/scan:', error);
@@ -400,12 +529,16 @@ async function startServer() {
     }
   });
 
-  // Short-lived in-memory Slack OAuth state & one-time session delivery (resilient to COOP / opener clearing)
-  const pendingSlackOAuth = new Map<string, { redirectUri: string; createdAt: number }>();
+  // Short-lived in-memory Slack OAuth state & one-time session delivery (strictly owner-bound)
+  const pendingSlackOAuth = new Map<
+    string,
+    { redirectUri: string; ownerUid: string; ownerEmail: string; createdAt: number }
+  >();
   const completedSlackOAuth = new Map<
     string,
     {
       ok: boolean;
+      ownerUid: string;
       accessToken?: string;
       teamName?: string;
       authedUserId?: string;
@@ -473,9 +606,25 @@ async function startServer() {
     };
   };
 
-  // Slack 3P OAuth URL builder
-  app.get('/api/slack/auth/url', (req, res) => {
+  // Slack 3P OAuth URL builder (strictly owner-only — never exposes Slack config/credentials to other users)
+  app.get('/api/slack/auth/url', async (req, res) => {
     pruneSlackOAuthMaps();
+    const ownerCheck = await verifySlackOwnerRequest(req);
+    if (!ownerCheck.allowed || !ownerCheck.user) {
+      res.json({
+        configured: false,
+        ownerRestricted: true,
+        hasClientId: false,
+        hasClientSecret: false,
+        url: null,
+        state: null,
+        redirectUri: null,
+        devRedirectUri: null,
+        sharedRedirectUri: null,
+      });
+      return;
+    }
+
     const requestedOrigin =
       typeof req.query.origin === 'string' ? req.query.origin : undefined;
     const { redirectUri, devRedirectUri, sharedRedirectUri } =
@@ -484,11 +633,17 @@ async function startServer() {
     const result = buildSlackAuthUrl(redirectUri, state);
 
     if (result.configured) {
-      pendingSlackOAuth.set(state, { redirectUri, createdAt: Date.now() });
+      pendingSlackOAuth.set(state, {
+        redirectUri,
+        ownerUid: ownerCheck.user.uid,
+        ownerEmail: ownerCheck.user.email,
+        createdAt: Date.now(),
+      });
     }
 
     res.json({
       configured: result.configured,
+      ownerRestricted: false,
       hasClientId: result.hasClientId,
       hasClientSecret: result.hasClientSecret,
       url: result.url ?? null,
@@ -499,9 +654,17 @@ async function startServer() {
     });
   });
 
-  // One-time poll fallback for Slack OAuth when browser COOP severs window.opener
-  app.get('/api/slack/session', (req, res) => {
+  // One-time poll fallback for Slack OAuth (verified against the exact owner UID that initiated state)
+  app.get('/api/slack/session', async (req, res) => {
     pruneSlackOAuthMaps();
+    const ownerCheck = await verifySlackOwnerRequest(req);
+    if (!ownerCheck.allowed || !ownerCheck.user) {
+      res.status(403).json({
+        error: ownerCheck.reason || 'Slack session access is restricted to the workspace owner.',
+      });
+      return;
+    }
+
     const state = typeof req.query.state === 'string' ? req.query.state.trim() : '';
     if (!state) {
       res.status(400).json({ error: 'Missing OAuth state parameter.' });
@@ -510,6 +673,10 @@ async function startServer() {
     const completed = completedSlackOAuth.get(state);
     if (!completed) {
       res.json({ pending: true });
+      return;
+    }
+    if (completed.ownerUid !== ownerCheck.user.uid) {
+      res.status(403).json({ error: 'Unauthorized Slack OAuth session.' });
       return;
     }
     completedSlackOAuth.delete(state);
@@ -612,47 +779,40 @@ async function startServer() {
     const pending = state ? pendingSlackOAuth.get(state) : undefined;
     if (state) pendingSlackOAuth.delete(state);
 
+    // Reject forged or expired callbacks that were not initiated by the verified owner
+    if (!pending) {
+      const errorMsg =
+        'Invalid or expired Slack authorization session. Please reconnect from the owner account.';
+      res.status(403).send(renderSlackCallbackHtml({ ok: false, state, error: errorMsg }));
+      return;
+    }
+
     if (oauthErr || !code) {
       const errorMsg =
         oauthErr === 'access_denied'
           ? 'Slack access was cancelled or requires Workspace Admin approval for this Slack app.'
           : oauthErr || 'Missing Slack authorization code.';
-      if (state) {
-        completedSlackOAuth.set(state, {
-          ok: false,
-          error: errorMsg,
-          createdAt: Date.now(),
-        });
-      }
-      realtimeHub.broadcast('slack:oauth', {
-        state,
+      completedSlackOAuth.set(state, {
         ok: false,
+        ownerUid: pending.ownerUid,
         error: errorMsg,
+        createdAt: Date.now(),
       });
       res.status(400).send(renderSlackCallbackHtml({ ok: false, state, error: errorMsg }));
       return;
     }
 
     try {
-      const redirectUri =
-        pending?.redirectUri || getSlackCallbackUris(undefined, req).redirectUri;
+      const redirectUri = pending.redirectUri;
       const exchanged = await exchangeSlackCode(code, redirectUri);
 
-      if (state) {
-        completedSlackOAuth.set(state, {
-          ok: true,
-          accessToken: exchanged.accessToken,
-          teamName: exchanged.teamName,
-          authedUserId: exchanged.authedUserId,
-          createdAt: Date.now(),
-        });
-      }
-      realtimeHub.broadcast('slack:oauth', {
-        state,
+      completedSlackOAuth.set(state, {
         ok: true,
+        ownerUid: pending.ownerUid,
         accessToken: exchanged.accessToken,
         teamName: exchanged.teamName,
         authedUserId: exchanged.authedUserId,
+        createdAt: Date.now(),
       });
 
       res.send(
@@ -668,26 +828,30 @@ async function startServer() {
       const msg =
         error instanceof Error ? error.message : 'Slack token exchange failed.';
       console.error('Slack OAuth callback error:', msg);
-      if (state) {
-        completedSlackOAuth.set(state, {
-          ok: false,
-          error: msg,
-          createdAt: Date.now(),
-        });
-      }
-      realtimeHub.broadcast('slack:oauth', {
-        state,
+      completedSlackOAuth.set(state, {
         ok: false,
+        ownerUid: pending.ownerUid,
         error: msg,
+        createdAt: Date.now(),
       });
       res.status(500).send(renderSlackCallbackHtml({ ok: false, state, error: msg }));
     }
   };
   app.get(['/api/slack/callback', '/api/slack/callback/'], handleSlackCallback);
 
-  // Slack Job Channel Scanner
+  // Slack Job Channel Scanner (owner-only)
   app.post('/api/slack/scan', async (req, res) => {
     try {
+      const ownerCheck = await verifySlackOwnerRequest(req);
+      if (!ownerCheck.allowed) {
+        res.status(403).json({
+          error:
+            ownerCheck.reason ||
+            'Slack scanning is restricted to the workspace owner.',
+        });
+        return;
+      }
+
       const authHeader = req.headers.authorization;
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
         res.status(401).json({
@@ -718,12 +882,6 @@ async function startServer() {
         searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
         rules: Array.isArray(rules) ? rules : [],
         recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
-      });
-
-      realtimeHub.broadcast('agent:completed', {
-        trigger: 'manual',
-        newJobs: output.newJobs,
-        runReport: output.runReport,
       });
 
       res.json(output);

@@ -134,6 +134,10 @@ service cloud.firestore {
       return val in ['up', 'down', 'none'];
     }
 
+    function isValidPriority(val) {
+      return val in ['high', 'medium', 'low'];
+    }
+
     function isValidJob(data, userId, jobId) {
       return data.keys().hasAll([
           'id', 'ownerId', 'urlHash', 'title', 'company', 'companyDomain',
@@ -146,7 +150,7 @@ service cloud.firestore {
           'id', 'ownerId', 'urlHash', 'title', 'company', 'companyDomain',
           'stage', 'isNew', 'matchScore', 'previousMatchScore', 'matchReason',
           'salaryMin', 'salaryMax', 'salaryLabel', 'location', 'locationType',
-          'employmentType', 'isMbaRole', 'sourceId', 'sourceName', 'atsType', 'jobUrl',
+          'employmentType', 'isMbaRole', 'priority', 'sourceId', 'sourceName', 'atsType', 'jobUrl',
           'discoveredAt', 'discoveredTime', 'deadlineAt', 'skills', 'summary',
           'fullDescription', 'networkingContacts',
           'notes', 'feedback', 'dislikeReason', 'createdAt', 'updatedAt'
@@ -174,6 +178,7 @@ service cloud.firestore {
         isValidLocationType(data.locationType) &&
         (!('employmentType' in data) || isBoundedString(data.employmentType, 0, 60)) &&
         (!('isMbaRole' in data) || data.isMbaRole is bool) &&
+        (!('priority' in data) || data.priority == null || isValidPriority(data.priority)) &&
         isBoundedString(data.sourceId, 0, 128) &&
         isBoundedString(data.sourceName, 0, 160) &&
         isValidAtsType(data.atsType) &&
@@ -425,9 +430,16 @@ service cloud.firestore {
               'summary', 'fullDescription', 'matchScore', 'previousMatchScore',
               'matchReason', 'updatedAt'
             ]) ||
-            // Action 7: Manual employment type or MBA role flag update
+            // Action 7: Manual employment type, MBA role flag, or priority update
             incoming().diff(existing()).affectedKeys().hasOnly([
-              'employmentType', 'isMbaRole', 'updatedAt'
+              'employmentType', 'isMbaRole', 'priority', 'updatedAt'
+            ]) ||
+            // Action 8: Manual role details edit & URL auto-populate
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'company', 'companyDomain', 'salaryMin', 'salaryMax', 'salaryLabel',
+              'location', 'locationType', 'employmentType', 'isMbaRole', 'priority', 'jobUrl',
+              'deadlineAt', 'skills', 'summary', 'fullDescription',
+              'matchScore', 'previousMatchScore', 'matchReason', 'updatedAt'
             ])
           );
 

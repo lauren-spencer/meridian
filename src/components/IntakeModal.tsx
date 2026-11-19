@@ -14,6 +14,7 @@ import {
   Globe,
   Hash,
   Info,
+  Lock,
   Mail,
   MessageCircle,
   Plus,
@@ -58,6 +59,7 @@ interface IntakeModalProps {
   slackConnected: boolean;
   slackTeamName: string | null;
   slackConfigured: boolean;
+  slackOwnerRestricted?: boolean;
   slackHasClientId: boolean;
   slackHasClientSecret: boolean;
   slackRedirectUri: string | null;
@@ -100,6 +102,7 @@ export function IntakeModal({
   slackConnected,
   slackTeamName,
   slackConfigured,
+  slackOwnerRestricted = false,
   slackHasClientId,
   slackHasClientSecret,
   slackRedirectUri,
@@ -1212,13 +1215,17 @@ export function IntakeModal({
                       <span className="text-sm font-semibold text-zinc-950">
                         Slack Job Channels
                       </span>
+                      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-zinc-500">
+                        <Lock className="w-3 h-3" />
+                        <span>Owner only</span>
+                      </span>
                     </div>
                     <p className="text-xs text-zinc-500">
                       Scan community, alumni, or referral Slack channels for roles and direct hiring posts.
                     </p>
                   </div>
 
-                  {slackConnected ? (
+                  {!slackOwnerRestricted && (slackConnected ? (
                     <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 shrink-0">
                       <CheckCircle2 className="w-4 h-4" />
                       <span>Connected ({slackTeamName || 'Slack'})</span>
@@ -1245,8 +1252,18 @@ export function IntakeModal({
                         {showSlackDetails ? 'Hide Steps' : 'How to Set Up Slack'}
                       </button>
                     </div>
-                  )}
+                  ))}
                 </div>
+
+                {slackOwnerRestricted ? (
+                  <div className="p-3 bg-zinc-50 border border-zinc-200 rounded-md flex items-start gap-2 text-xs text-zinc-600">
+                    <Lock className="w-3.5 h-3.5 text-zinc-500 shrink-0 mt-0.5" />
+                    <span>
+                      Private owner integration — Slack API credentials on this deployment are restricted to the workspace owner. Sign in with the owner Google account to connect Slack.
+                    </span>
+                  </div>
+                ) : (
+                  <>
 
                 {slackConnectAttempted && slackError && (
                   <div className="p-2.5 bg-red-50 border border-red-200 rounded-md flex items-start gap-2 text-xs text-red-700">
@@ -1393,6 +1410,8 @@ export function IntakeModal({
                       </span>
                     ))}
                   </div>
+                )}
+                  </>
                 )}
               </div>
 

@@ -1,7 +1,26 @@
 import React, { useState } from 'react';
 import { GripVertical, ThumbsDown, ThumbsUp, Trash2, X } from 'lucide-react';
-import { DislikeReason, JobRecord, PipelineStage } from '../types/job';
+import { DislikeReason, JobPriority, JobRecord, PipelineStage } from '../types/job';
 import { DislikeReasonPopover } from './DislikeReasonPopover';
+
+const PRIORITY_RANK: Record<JobPriority, number> = {
+  high: 3,
+  medium: 2,
+  low: 1,
+};
+
+function prioritySelectClass(priority?: JobPriority): string {
+  switch (priority) {
+    case 'high':
+      return 'text-red-700 font-semibold bg-red-50/70 border-red-200';
+    case 'medium':
+      return 'text-amber-700 font-medium bg-amber-50/70 border-amber-200';
+    case 'low':
+      return 'text-blue-700 font-medium bg-blue-50/60 border-blue-200';
+    default:
+      return 'text-zinc-400 bg-white border-zinc-200 hover:border-zinc-300 hover:text-zinc-600';
+  }
+}
 
 interface KanbanViewProps {
   jobs: JobRecord[];
@@ -10,6 +29,7 @@ interface KanbanViewProps {
   onThumbsUp: (jobId: string) => void;
   onThumbsDown: (jobId: string, reason?: DislikeReason) => void;
   onDeleteJob: (jobId: string) => void;
+  onChangePriority: (jobId: string, priority: JobPriority | null) => void;
 }
 
 const COLUMNS: {
@@ -31,6 +51,7 @@ export function KanbanView({
   onThumbsUp,
   onThumbsDown,
   onDeleteJob,
+  onChangePriority,
 }: KanbanViewProps) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<PipelineStage | null>(null);
@@ -89,7 +110,12 @@ export function KanbanView({
         {COLUMNS.map((column) => {
           const columnJobs = jobs
             .filter((j) => j.stage === column.id)
-            .sort((a, b) => b.matchScore - a.matchScore);
+            .sort((a, b) => {
+              const rankA = a.priority ? PRIORITY_RANK[a.priority] : 0;
+              const rankB = b.priority ? PRIORITY_RANK[b.priority] : 0;
+              if (rankA !== rankB) return rankB - rankA;
+              return b.matchScore - a.matchScore;
+            });
           const isDropTarget = dragOverStage === column.id;
 
           return (
@@ -220,10 +246,34 @@ export function KanbanView({
                         <span className="font-mono text-zinc-700">{job.salaryLabel}</span>
                       </div>
 
-                      <div className="mt-1 flex items-center gap-1.5 text-[11px] text-zinc-400">
-                        <span>{job.locationType}</span>
-                        <span aria-hidden="true">·</span>
-                        <span className="truncate">{job.atsType}</span>
+                      <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-zinc-400">
+                        <div className="flex items-center gap-1.5 min-w-0 truncate">
+                          <span>{job.locationType}</span>
+                          <span aria-hidden="true">·</span>
+                          <span className="truncate">{job.atsType}</span>
+                        </div>
+                        <select
+                          aria-label={`Priority for ${job.title}`}
+                          value={job.priority ?? ''}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            onChangePriority(
+                              job.id,
+                              val === 'high' || val === 'medium' || val === 'low'
+                                ? val
+                                : null
+                            );
+                          }}
+                          className={`h-6 px-1.5 text-[10.5px] rounded border shrink-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-600/20 ${prioritySelectClass(
+                            job.priority
+                          )}`}
+                        >
+                          <option value="">Priority</option>
+                          <option value="high">High</option>
+                          <option value="medium">Medium</option>
+                          <option value="low">Low</option>
+                        </select>
                       </div>
 
                       {/* Inline triage actions for Inbox cards */}

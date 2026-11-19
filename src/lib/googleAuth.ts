@@ -137,6 +137,16 @@ export const signInWithGoogleGmail = async (): Promise<{
 
 export const getGmailAccessToken = (): string | null => cachedAccessToken;
 
+export const getFirebaseIdToken = async (): Promise<string | null> => {
+  const current = auth.currentUser;
+  if (!current) return null;
+  try {
+    return await current.getIdToken();
+  } catch {
+    return null;
+  }
+};
+
 export const clearGmailAccessToken = (): void => {
   cachedAccessToken = null;
 };
