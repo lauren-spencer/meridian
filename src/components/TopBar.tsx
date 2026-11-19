@@ -18,7 +18,7 @@ const VIEW_BREADCRUMB: Record<WorkspaceView, { section: string; page: string }> 
   kanban: { section: 'Roles', page: 'Kanban Board' },
   calendar: { section: 'Roles', page: 'Calendar' },
   sources: { section: 'Agent', page: 'Sources & Channels' },
-  resumes: { section: 'Agent', page: 'Resumes & Context' },
+  resumes: { section: 'Agent', page: 'Resumes & Cover Letters' },
   criteria: { section: 'Agent', page: 'Criteria & Feedback' },
   schema: { section: 'Architecture', page: 'Database Schema' },
 };

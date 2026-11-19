@@ -1,4 +1,9 @@
-import type { JobRecord, RoleResume } from '../types/job';
+import type {
+  CoverLetterSample,
+  EmploymentType,
+  JobRecord,
+  RoleResume,
+} from '../types/job';
 
 export const DEFAULT_RESUME_ROLE_TYPES = [
   'Product Manager',
@@ -8,6 +13,43 @@ export const DEFAULT_RESUME_ROLE_TYPES = [
   'Business Operations',
   'Management Consultant',
 ];
+
+export const EMPLOYMENT_TYPES: EmploymentType[] = [
+  'Full-time',
+  'Internship',
+  'Part-time',
+  'Contract',
+];
+
+export function detectIsMbaRole(title: string): boolean {
+  if (!title) return false;
+  return /\bmba\b/i.test(title);
+}
+
+export function normalizeEmploymentType(
+  raw?: string | null,
+  title?: string | null,
+  extraText?: string | null
+): EmploymentType {
+  const candidates = [raw ?? '', title ?? '', (extraText ?? '').slice(0, 600)];
+  for (const source of candidates) {
+    const text = source.toLowerCase();
+    if (!text.trim()) continue;
+    if (/\b(intern|internship|summer\s+associate|summer\s+analyst|co-?op)\b/i.test(text)) {
+      return 'Internship';
+    }
+    if (/\b(part[\s-]?time)\b/i.test(text)) {
+      return 'Part-time';
+    }
+    if (/\b(contract|contractor|freelance|temporary|temp\b|consultant\s+contract)\b/i.test(text)) {
+      return 'Contract';
+    }
+    if (/\b(full[\s-]?time|fte|permanent)\b/i.test(text)) {
+      return 'Full-time';
+    }
+  }
+  return 'Full-time';
+}
 
 export function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -68,27 +110,21 @@ const ROLE_SYNONYMS: { key: string; patterns: string[] }[] = [
   { key: 'design', patterns: ['designer', 'ux', 'ui ', 'product design'] },
 ];
 
-/**
- * Picks the closest matching uploaded RoleResume for a target job.
- */
-export function selectBestResumeForJob(
-  job: Pick<JobRecord, 'title' | 'skills' | 'summary'>,
-  resumes: RoleResume[]
-): RoleResume | null {
-  if (resumes.length === 0) return null;
-  if (resumes.length === 1) return resumes[0];
+function scoreTrackAgainstText<T extends { roleType: string }>(
+  haystack: string,
+  items: T[]
+): T | null {
+  if (items.length === 0) return null;
+  if (items.length === 1) return items[0];
 
-  const haystack = ` ${job.title} ${job.skills.join(' ')} `.toLowerCase();
-
-  let bestResume = resumes[0];
+  let bestItem = items[0];
   let bestScore = -1;
 
-  for (const res of resumes) {
-    const rt = ` ${res.roleType.toLowerCase()} `;
+  for (const item of items) {
+    const rt = ` ${item.roleType.toLowerCase()} `;
     let score = 0;
 
-    // Direct token overlap with roleType
-    const tokens = res.roleType
+    const tokens = item.roleType
       .toLowerCase()
       .split(/[^a-z0-9]+/)
       .filter((t) => t.length >= 2);
@@ -96,20 +132,127 @@ export function selectBestResumeForJob(
       if (haystack.includes(tok)) score += 3;
     }
 
-    // Synonym family matching (distinguishes PM vs PMM vs Strategy cleanly)
     for (const fam of ROLE_SYNONYMS) {
-      const resumeMatchesFam = fam.patterns.some((p) => rt.includes(p));
+      const itemMatchesFam = fam.patterns.some((p) => rt.includes(p));
       const jobMatchesFam = fam.patterns.some((p) => haystack.includes(p));
-      if (resumeMatchesFam && jobMatchesFam) {
+      if (itemMatchesFam && jobMatchesFam) {
         score += fam.key === 'pmm' ? 8 : 6;
       }
     }
 
     if (score > bestScore) {
       bestScore = score;
-      bestResume = res;
+      bestItem = item;
     }
   }
 
-  return bestResume;
+  return bestItem;
 }
+
+/**
+ * Picks the closest matching uploaded RoleResume for a target job.
+ */
+export function selectBestResumeForJob(
+  job: Pick<JobRecord, 'title' | 'skills' | 'summary'>,
+  resumes: RoleResume[]
+): RoleResume | null {
+  const haystack = ` ${job.title} ${job.skills.join(' ')} `.toLowerCase();
+  return scoreTrackAgainstText(haystack, resumes);
+}
+
+/**
+ * Picks the closest matching uploaded CoverLetterSample for a target job.
+ */
+export function selectBestCoverLetterSampleForJob(
+  job: Pick<JobRecord, 'title' | 'skills' | 'summary'>,
+  samples: CoverLetterSample[]
+): CoverLetterSample | null {
+  const haystack = ` ${job.title} ${job.skills.join(' ')} `.toLowerCase();
+  return scoreTrackAgainstText(haystack, samples);
+}
+
+export interface CoverLetterRoleRequirement {
+  roleType: string;
+  matchedSample: CoverLetterSample | null;
+}
+
+export interface CoverLetterUnlockStatus {
+  unlocked: boolean;
+  requiredRoles: CoverLetterRoleRequirement[];
+  missingRoles: string[];
+  uploadedCount: number;
+  requiredCount: number;
+}
+
+function roleMatchesSample(targetRole: string, sample: CoverLetterSample): boolean {
+  const a = targetRole.trim().toLowerCase();
+  const b = sample.roleType.trim().toLowerCase();
+  if (!a || !b) return false;
+  if (a === b || a.includes(b) || b.includes(a)) return true;
+
+  const aTokens = a.split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
+  const bTokens = b.split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
+  if (aTokens.length > 0 && aTokens.every((t) => b.includes(t))) return true;
+  if (bTokens.length > 0 && bTokens.every((t) => a.includes(t))) return true;
+
+  const aPad = ` ${a} `;
+  const bPad = ` ${b} `;
+  for (const fam of ROLE_SYNONYMS) {
+    const aFam = fam.patterns.some((p) => aPad.includes(p));
+    const bFam = fam.patterns.some((p) => bPad.includes(p));
+    if (aFam && bFam) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Computes whether the Cover Letter Generator is unlocked.
+ * Requires an uploaded cover letter sample for every role in the user's target roleTypes
+ * (or at least 1 sample if no target roleTypes are configured yet).
+ */
+export function getCoverLetterUnlockStatus(
+  targetRoleTypes: string[],
+  samples: CoverLetterSample[]
+): CoverLetterUnlockStatus {
+  const cleanRoles = Array.from(
+    new Set(targetRoleTypes.map((r) => r.trim()).filter(Boolean))
+  );
+
+  if (cleanRoles.length === 0) {
+    const hasAny = samples.length > 0;
+    return {
+      unlocked: hasAny,
+      requiredRoles: [
+        {
+          roleType: 'Target Role Sample',
+          matchedSample: samples[0] ?? null,
+        },
+      ],
+      missingRoles: hasAny ? [] : ['Target Role Sample'],
+      uploadedCount: hasAny ? 1 : 0,
+      requiredCount: 1,
+    };
+  }
+
+  const requiredRoles: CoverLetterRoleRequirement[] = cleanRoles.map((roleType) => {
+    const matchedSample =
+      samples.find((s) => s.roleType.trim().toLowerCase() === roleType.toLowerCase()) ??
+      samples.find((s) => roleMatchesSample(roleType, s)) ??
+      null;
+    return { roleType, matchedSample };
+  });
+
+  const missingRoles = requiredRoles
+    .filter((r) => !r.matchedSample)
+    .map((r) => r.roleType);
+
+  return {
+    unlocked: missingRoles.length === 0,
+    requiredRoles,
+    missingRoles,
+    uploadedCount: requiredRoles.length - missingRoles.length,
+    requiredCount: requiredRoles.length,
+  };
+}
+

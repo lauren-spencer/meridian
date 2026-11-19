@@ -256,7 +256,44 @@ function isPlaceholderSummary(summary?: string): boolean {
 }
 
 function isPlaceholderDescription(desc?: string): boolean {
-  return (desc ?? '').trim().length < 140;
+  return (desc ?? '').trim().length < 300;
+}
+
+export function isPlaceholderJobUrl(url?: string): boolean {
+  const trimmed = (url ?? '').trim();
+  if (!trimmed || !/^https?:\/\//i.test(trimmed)) return true;
+  if (/\.example\b|mail\.google\.com|slack\.com\/archives/i.test(trimmed)) return true;
+  return false;
+}
+
+export function detectIsMbaRoleServer(title?: string): boolean {
+  if (!title) return false;
+  return /\bmba\b/i.test(title);
+}
+
+export function normalizeEmploymentTypeServer(
+  raw?: string | null,
+  title?: string | null,
+  extraText?: string | null
+): 'Full-time' | 'Internship' | 'Part-time' | 'Contract' {
+  const candidates = [raw ?? '', title ?? '', (extraText ?? '').slice(0, 600)];
+  for (const source of candidates) {
+    const text = source.toLowerCase();
+    if (!text.trim()) continue;
+    if (/\b(intern|internship|summer\s+associate|summer\s+analyst|co-?op)\b/i.test(text)) {
+      return 'Internship';
+    }
+    if (/\b(part[\s-]?time)\b/i.test(text)) {
+      return 'Part-time';
+    }
+    if (/\b(contract|contractor|freelance|temporary|temp\b|consultant\s+contract)\b/i.test(text)) {
+      return 'Contract';
+    }
+    if (/\b(full[\s-]?time|fte|permanent)\b/i.test(text)) {
+      return 'Full-time';
+    }
+  }
+  return 'Full-time';
 }
 
 function detectAtsFromCareersUrl(url: string): AtsType {
@@ -452,46 +489,54 @@ INSTRUCTIONS:
   return postings;
 }
 
-async function enrichIncompleteJobs(
+export async function enrichIncompleteJobs(
   incompleteJobs: IncompleteJobCandidate[],
   searchPrompt: string,
   rules: { text: string; active: boolean }[]
 ): Promise<JobEnrichmentPatch[]> {
   if (incompleteJobs.length === 0) return [];
 
-  // Select up to 8 active roles that actually have missing/placeholder fields
-  const candidates = incompleteJobs
-    .filter(
-      (j) =>
-        isPlaceholderTitle(j.title) ||
-        isPlaceholderSalary(j.salaryLabel) ||
-        isPlaceholderLocation(j.location) ||
-        isPlaceholderSummary(j.summary) ||
-        isPlaceholderDescription(j.fullDescription) ||
-        !j.employmentType
-    )
-    .slice(0, 8);
+  // Select up to 12 active roles that have missing/placeholder fields, prioritizing missing URLs & JDs
+  const eligible = incompleteJobs.filter(
+    (j) =>
+      isPlaceholderTitle(j.title) ||
+      isPlaceholderJobUrl(j.jobUrl) ||
+      isPlaceholderSalary(j.salaryLabel) ||
+      isPlaceholderLocation(j.location) ||
+      isPlaceholderSummary(j.summary) ||
+      isPlaceholderDescription(j.fullDescription) ||
+      !j.employmentType ||
+      !j.skills ||
+      j.skills.length === 0
+  );
 
+  eligible.sort((a, b) => {
+    const score = (j: IncompleteJobCandidate) =>
+      (isPlaceholderJobUrl(j.jobUrl) ? 4 : 0) +
+      (isPlaceholderDescription(j.fullDescription) ? 3 : 0) +
+      (isPlaceholderTitle(j.title) ? 2 : 0) +
+      (isPlaceholderSalary(j.salaryLabel) ? 1 : 0) +
+      (!j.employmentType ? 1 : 0);
+    return score(b) - score(a);
+  });
+
+  const candidates = eligible.slice(0, 12);
   if (candidates.length === 0) return [];
 
-  // Try lightweight page fetch for candidates with a real public posting URL
+  // Try lightweight page fetch for candidates that already have a real public posting URL
   const fetchedSnippets = new Map<string, string>();
   await Promise.all(
     candidates.map(async (job) => {
       const url = (job.jobUrl ?? '').trim();
-      if (
-        !url ||
-        !/^https?:\/\//i.test(url) ||
-        /\.example\b|mail\.google\.com/i.test(url)
-      ) {
+      if (isPlaceholderJobUrl(url)) {
         return;
       }
       try {
-        const res = await fetchWithTimeout(url, 4500);
+        const res = await fetchWithTimeout(url, 5000);
         if (!res.ok) return;
         const html = await res.text();
-        const text = stripHtmlToText(html, 3000);
-        if (text.length >= 100) {
+        const text = stripHtmlToText(html, 5000);
+        if (text.length >= 120) {
           fetchedSnippets.set(job.id, text);
         }
       } catch {
@@ -510,7 +555,7 @@ async function enrichIncompleteJobs(
     id: j.id,
     company: j.company,
     currentTitle: j.title,
-    jobUrl: j.jobUrl,
+    jobUrl: isPlaceholderJobUrl(j.jobUrl) ? '' : j.jobUrl,
     currentSalaryLabel: j.salaryLabel,
     currentLocation: j.location,
     currentLocationType: j.locationType,
@@ -518,6 +563,7 @@ async function enrichIncompleteJobs(
     notes: (j.notes ?? '').slice(0, 200),
     missingFields: [
       isPlaceholderTitle(j.title) ? 'title' : null,
+      isPlaceholderJobUrl(j.jobUrl) ? 'jobUrl' : null,
       isPlaceholderSalary(j.salaryLabel) ? 'salary' : null,
       isPlaceholderLocation(j.location) ? 'location' : null,
       !j.employmentType ? 'employmentType' : null,
@@ -525,10 +571,10 @@ async function enrichIncompleteJobs(
       isPlaceholderDescription(j.fullDescription) ? 'fullDescription' : null,
       (!j.skills || j.skills.length === 0) ? 'skills' : null,
     ].filter(Boolean),
-    fetchedPageExcerpt: fetchedSnippets.get(j.id)?.slice(0, 2200) ?? '',
+    fetchedPageExcerpt: fetchedSnippets.get(j.id)?.slice(0, 3600) ?? '',
   }));
 
-  const prompt = `You are enriching incomplete job tracker records for a job seeker using the fetched job page excerpts AND live Google Search.
+  const prompt = `You are enriching incomplete job tracker records (from email alerts, Slack, WhatsApp, CSV imports, or job boards) using the fetched job page excerpts AND live Google Search.
 
 CANDIDATE TARGET CRITERIA:
 ${searchPrompt || 'Roles matching user preferences.'}
@@ -537,23 +583,28 @@ ACTIVE RULES:
 ${activeRules || '- None'}
 
 INSTRUCTIONS:
-- For each job below, look up ONLY the missing/placeholder fields (e.g., if currentTitle is "Untitled Role", look for an open matching role at that company or extract the exact title from the URL/page; if salary is "Not listed", look up the listed compensation range on the posting or company career board; fill missing location, work mode, employment type, skills, concise summary, and detailed fullDescription).
-- Use real information from fetchedPageExcerpt or verified Google Search results. Do NOT fabricate fake salaries or fake URLs. If a field genuinely cannot be found, leave it null/omitted.
-- If a job had "Untitled Role" and you find a real matching open role at that company matching CANDIDATE TARGET CRITERIA, return the real title, jobUrl, location, salary, summary, and fullDescription.
+- For each job below, use fetchedPageExcerpt AND live Google Search to find EVERY missing/placeholder field:
+  * If jobUrl is missing/empty, search the web for the canonical public job posting URL (company careers page, Greenhouse, Lever, Ashby, Workday, LinkedIn, etc.).
+  * If fullDescription is missing/short, pull the complete, detailed multi-section job description (About the Role, Key Responsibilities, Qualifications, Compensation & Benefits) from the posting page or search results.
+  * If employmentType is missing, determine strictly one of: "Full-time", "Internship", "Part-time", or "Contract".
+  * If currentTitle is "Untitled Role", look for an open matching role at that company matching CANDIDATE TARGET CRITERIA.
+  * If salary is "Not listed", look up the listed compensation range on the posting or company career board.
+  * Fill missing location, work mode (Remote/Hybrid/Onsite), skills (3-5), and concise summary.
+- Use ONLY verified facts from fetchedPageExcerpt or live Google Search results. Do NOT fabricate fake salaries or fake URLs. If a field genuinely cannot be found, leave it null.
 - Respond ONLY with a valid JSON array (no extra text) of objects:
   {
     "id": "exact job id",
     "title": "string or null (only if missing/Untitled Role and a real role title was found)",
-    "jobUrl": "string or null (only if a real posting URL was found and current jobUrl is empty)",
+    "jobUrl": "string or null (canonical public https:// posting URL if missing)",
     "salaryMin": integer USD base or null,
     "salaryMax": integer USD base or null,
     "salaryLabel": "e.g. $180k – $215k or null if not found",
     "location": "City, State or Remote or null",
     "locationType": "Remote" | "Hybrid" | "Onsite" | null,
-    "employmentType": "Full-time" | "Internship" | "Contract" | "Part-time" | null,
+    "employmentType": "Full-time" | "Internship" | "Part-time" | "Contract" | null,
     "skills": ["3-5 skills"] or [],
     "summary": "1-2 concise sentences or null",
-    "fullDescription": "Clean multi-section job description (About, Responsibilities, Qualifications, Comp) or null",
+    "fullDescription": "Complete multi-section job description (About, Responsibilities, Qualifications, Comp) or null",
     "matchScore": integer 0-100 or null,
     "matchReason": "1 crisp sentence or null"
   }
@@ -602,9 +653,14 @@ ${JSON.stringify(payload)}`;
 
     if (isPlaceholderTitle(orig.title) && item.title && !isPlaceholderTitle(item.title)) {
       patch.title = item.title.trim().slice(0, 180);
+      patch.isMbaRole = detectIsMbaRoleServer(patch.title);
       changed = true;
     }
-    if (!orig.jobUrl && item.jobUrl && /^https?:\/\//i.test(item.jobUrl) && !/\.example\b/i.test(item.jobUrl)) {
+    if (
+      isPlaceholderJobUrl(orig.jobUrl) &&
+      item.jobUrl &&
+      !isPlaceholderJobUrl(item.jobUrl)
+    ) {
       patch.jobUrl = item.jobUrl.trim().slice(0, 950);
       patch.companyDomain = extractDomain(patch.jobUrl);
       changed = true;
@@ -631,8 +687,12 @@ ${JSON.stringify(payload)}`;
       patch.locationType = item.locationType;
       changed = true;
     }
-    if (!orig.employmentType && item.employmentType && item.employmentType.trim()) {
-      patch.employmentType = item.employmentType.trim().slice(0, 50);
+    if (!orig.employmentType && (item.employmentType || item.title || item.fullDescription)) {
+      patch.employmentType = normalizeEmploymentTypeServer(
+        item.employmentType,
+        patch.title ?? orig.title,
+        item.fullDescription ?? fetchedSnippets.get(orig.id) ?? orig.summary
+      );
       changed = true;
     }
     if ((!orig.skills || orig.skills.length === 0) && Array.isArray(item.skills) && item.skills.length > 0) {
@@ -643,9 +703,16 @@ ${JSON.stringify(payload)}`;
       patch.summary = item.summary.trim().slice(0, 1800);
       changed = true;
     }
-    if (isPlaceholderDescription(orig.fullDescription) && item.fullDescription && item.fullDescription.trim().length >= 100) {
-      patch.fullDescription = item.fullDescription.trim().slice(0, 12000);
-      changed = true;
+    if (isPlaceholderDescription(orig.fullDescription)) {
+      const candidateDesc = item.fullDescription?.trim() || '';
+      const fetchedRaw = fetchedSnippets.get(orig.id)?.trim() || '';
+      if (candidateDesc.length >= 160) {
+        patch.fullDescription = candidateDesc.slice(0, 12000);
+        changed = true;
+      } else if (fetchedRaw.length >= 240) {
+        patch.fullDescription = fetchedRaw.slice(0, 12000);
+        changed = true;
+      }
     }
     if (changed && typeof item.matchScore === 'number' && Number.isFinite(item.matchScore)) {
       patch.matchScore = Math.min(100, Math.max(0, Math.round(item.matchScore)));
@@ -658,6 +725,29 @@ ${JSON.stringify(payload)}`;
       patches.push(patch);
     }
   }
+
+  // If we newly discovered a real jobUrl for any patch that still lacks a full JD, fetch the posting page
+  await Promise.all(
+    patches.map(async (patch) => {
+      if (
+        patch.jobUrl &&
+        !isPlaceholderJobUrl(patch.jobUrl) &&
+        (!patch.fullDescription || patch.fullDescription.length < 300)
+      ) {
+        try {
+          const res = await fetchWithTimeout(patch.jobUrl, 4500);
+          if (!res.ok) return;
+          const html = await res.text();
+          const text = stripHtmlToText(html, 8000);
+          if (text.length > (patch.fullDescription?.length ?? 0) && text.length >= 240) {
+            patch.fullDescription = text;
+          }
+        } catch {
+          // Non-blocking
+        }
+      }
+    })
+  );
 
   return patches;
 }
@@ -1121,6 +1211,7 @@ const SCORING_RESPONSE_SCHEMA = {
       salaryLabel: { type: Type.STRING },
       location: { type: Type.STRING },
       locationType: { type: Type.STRING },
+      employmentType: { type: Type.STRING },
       deadlineAt: { type: Type.STRING, nullable: true },
       skills: {
         type: Type.ARRAY,
@@ -1135,6 +1226,7 @@ const SCORING_RESPONSE_SCHEMA = {
       'salaryLabel',
       'location',
       'locationType',
+      'employmentType',
       'skills',
       'summary',
     ],
@@ -1150,6 +1242,7 @@ interface GeminiScoredItem {
   salaryLabel: string;
   location: string;
   locationType: string;
+  employmentType: string;
   deadlineAt: string | null;
   skills: string[];
   summary: string;
@@ -1208,6 +1301,7 @@ INSTRUCTIONS:
 - salaryMin / salaryMax: integer USD annual base salary if explicitly stated in the description, otherwise null.
 - salaryLabel: formatted like "$195k – $235k" if stated, otherwise "Not listed".
 - locationType: strictly one of "Remote", "Hybrid", or "Onsite".
+- employmentType: strictly one of "Full-time", "Internship", "Part-time", or "Contract".
 - deadlineAt: "YYYY-MM-DD" ONLY if an explicit application closing date appears in the description, otherwise null.
 - skills: 3 to 5 concise technical skills extracted from the posting.
 - summary: 2 concise sentences summarizing the role scope.
@@ -1374,8 +1468,27 @@ export async function runAgentPipeline(input: AgentRunInput): Promise<AgentRunOu
     });
   }
 
-  // Step D: Run Gemini scoring on new unseen roles AND enrichment on incomplete existing roles in parallel
+  // Step D: Pull full web job descriptions for newly discovered roles with short excerpts, then score + enrich incomplete roles
   const candidatesToScore = preRankCandidates(allUnseen, input.searchPrompt, maxNewPerRun);
+
+  await Promise.all(
+    candidatesToScore.map(async (candidate) => {
+      if (candidate.rawDescription.length >= 450 || isPlaceholderJobUrl(candidate.jobUrl)) {
+        return;
+      }
+      try {
+        const res = await fetchWithTimeout(candidate.jobUrl, 4500);
+        if (!res.ok) return;
+        const html = await res.text();
+        const extracted = stripHtmlToText(html, 8500);
+        if (extracted.length > candidate.rawDescription.length && extracted.length >= 220) {
+          candidate.rawDescription = extracted;
+        }
+      } catch {
+        // Non-blocking: keep original excerpt
+      }
+    })
+  );
 
   const [scoredByHash, enrichedJobs] = await Promise.all([
     scoreCandidatesWithGemini(candidatesToScore, input),
@@ -1398,6 +1511,11 @@ export async function runAgentPipeline(input: AgentRunInput): Promise<AgentRunOu
       typeof scored?.matchScore === 'number'
         ? Math.min(100, Math.max(0, Math.round(scored.matchScore)))
         : 75;
+    const employmentType = normalizeEmploymentTypeServer(
+      scored?.employmentType,
+      candidate.title,
+      candidate.rawDescription
+    );
 
     return {
       id: `job-live-${Date.now()}-${idx}`,
@@ -1416,6 +1534,8 @@ export async function runAgentPipeline(input: AgentRunInput): Promise<AgentRunOu
       salaryLabel: scored?.salaryLabel || 'Not listed',
       location: scored?.location || candidate.location,
       locationType: normalizeLocationType(scored?.locationType, candidate.isRemoteHint),
+      employmentType,
+      isMbaRole: detectIsMbaRoleServer(candidate.title),
       sourceId: candidate.sourceId,
       sourceName: candidate.sourceName,
       atsType: candidate.atsType,
@@ -1482,40 +1602,338 @@ export async function runAgentPipeline(input: AgentRunInput): Promise<AgentRunOu
   return { newJobs, enrichedJobs, checkedCompanyIds, runReport };
 }
 
-export async function fetchFullJobDescriptionFromUrl(jobUrl: string): Promise<string> {
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(jobUrl);
-  } catch {
-    throw new Error('Invalid job posting URL.');
-  }
-  if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-    throw new Error('Only http/https job URLs are supported.');
-  }
+export interface FetchedWebDescriptionResult {
+  fullDescription: string;
+  discoveredJobUrl?: string;
+  employmentType?: string;
+}
 
-  const res = await fetchWithTimeout(parsedUrl.toString());
-  if (!res.ok) {
-    throw new Error(`Could not load job page (HTTP ${res.status}).`);
-  }
-
-  const html = await res.text();
-  const compact = htmlToCompactMarkdown(html, parsedUrl.toString(), 14000);
-  if (compact.length < 80) {
-    throw new Error('Job page returned too little readable text (it may require sign-in or JS rendering).');
-  }
-
+export async function fetchFullJobDescriptionFromUrl(
+  jobUrl?: string,
+  fallbackContext?: { title?: string; company?: string; location?: string }
+): Promise<FetchedWebDescriptionResult> {
   const ai = getGeminiClient();
-  const response = await ai.models.generateContent({
+  const trimmedUrl = (jobUrl ?? '').trim();
+
+  // Attempt direct public URL fetch first when a non-Gmail/non-placeholder URL is provided
+  if (trimmedUrl && !isPlaceholderJobUrl(trimmedUrl)) {
+    try {
+      const parsedUrl = new URL(trimmedUrl);
+      if (['http:', 'https:'].includes(parsedUrl.protocol)) {
+        const res = await fetchWithTimeout(parsedUrl.toString());
+        if (res.ok) {
+          const html = await res.text();
+          const compact = htmlToCompactMarkdown(html, parsedUrl.toString(), 14000);
+          if (compact.length >= 160) {
+            const response = await ai.models.generateContent({
+              model: 'gemini-4-hydrogen',
+              contents: `Extract the clean, complete job description from this job posting page. Preserve key sections (About the Role, Responsibilities, Qualifications, Compensation & Benefits) in clean plain text with short headings and bullet points (- ). Remove navigation chrome, cookie banners, and unrelated links.\n\nPAGE CONTENT:\n${compact}`,
+              config: {
+                thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+              },
+            });
+            const text = (response.text || '').trim() || stripHtmlToText(html, 8000);
+            if (text.length >= 120) {
+              return {
+                fullDescription: text.slice(0, 12000),
+                employmentType: normalizeEmploymentTypeServer(
+                  null,
+                  fallbackContext?.title,
+                  text
+                ),
+              };
+            }
+          }
+        }
+      }
+    } catch {
+      // Fall through to live Google Search fallback below
+    }
+  }
+
+  // Fallback: Live Google Search to locate the canonical posting URL & full job description
+  const title = fallbackContext?.title?.trim() || '';
+  const company = fallbackContext?.company?.trim() || '';
+  const location = fallbackContext?.location?.trim() || '';
+
+  if (!title && !company && !trimmedUrl) {
+    throw new Error('Provide a job posting URL or role title and company to fetch the full description.');
+  }
+
+  const searchResponse = await ai.models.generateContent({
     model: 'gemini-4-hydrogen',
-    contents: `Extract the clean, complete job description from this job posting page. Preserve key sections (About the Role, Responsibilities, Qualifications, Compensation & Benefits) in clean plain text with short headings and bullet points (- ). Remove navigation chrome, cookie banners, and unrelated links.\n\nPAGE CONTENT:\n${compact}`,
+    contents: `Find the official public job posting on the web for this role and extract the complete job description:
+- Role Title: ${title || 'Unknown'}
+- Company: ${company || 'Unknown'}
+- Location: ${location || 'Any'}
+- Reference URL: ${trimmedUrl || 'None'}
+
+Respond ONLY with a valid JSON object (no extra text):
+{
+  "discoveredJobUrl": "canonical public https:// posting URL if found, else null",
+  "employmentType": "Full-time" | "Internship" | "Part-time" | "Contract" | null,
+  "fullDescription": "Clean, complete multi-section job description (About the Role, Responsibilities, Qualifications, Compensation & Benefits) with short headings and bullet points (- )."
+}`,
     config: {
+      tools: [{ googleSearch: {} }],
       thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
     },
   });
 
-  const text = (response.text || '').trim();
-  if (!text) {
-    return stripHtmlToText(html, 8000);
+  const parsed = parseJsonFromModelText<{
+    discoveredJobUrl?: string | null;
+    employmentType?: string | null;
+    fullDescription?: string | null;
+  }>(searchResponse.text ?? '{}', {});
+
+  let fullDescription = (parsed.fullDescription ?? '').trim();
+  const discoveredJobUrl =
+    parsed.discoveredJobUrl && !isPlaceholderJobUrl(parsed.discoveredJobUrl)
+      ? parsed.discoveredJobUrl.trim().slice(0, 950)
+      : undefined;
+
+  // If search found a real canonical URL and description is still sparse, fetch the page directly
+  if (discoveredJobUrl && fullDescription.length < 300) {
+    try {
+      const res = await fetchWithTimeout(discoveredJobUrl, 5000);
+      if (res.ok) {
+        const html = await res.text();
+        const extracted = stripHtmlToText(html, 9000);
+        if (extracted.length > fullDescription.length) {
+          fullDescription = extracted;
+        }
+      }
+    } catch {
+      // keep search result
+    }
   }
-  return text.slice(0, 12000);
+
+  if (!fullDescription || fullDescription.length < 60) {
+    throw new Error(
+      'Could not retrieve a full public job description from the web (the posting may be closed or require sign-in).'
+    );
+  }
+
+  return {
+    fullDescription: fullDescription.slice(0, 12000),
+    discoveredJobUrl,
+    employmentType: normalizeEmploymentTypeServer(
+      parsed.employmentType,
+      title,
+      fullDescription
+    ),
+  };
+}
+
+function detectAtsFromUrl(url: string): AtsType {
+  const lower = url.toLowerCase();
+  if (lower.includes('greenhouse.io')) return 'Greenhouse';
+  if (lower.includes('lever.co')) return 'Lever';
+  if (lower.includes('ashbyhq.com')) return 'Ashby';
+  if (lower.includes('rss') || lower.includes('.xml')) return 'RSS Feed';
+  return 'Custom Markdown';
+}
+
+export async function extractJobFromUrl(input: {
+  jobUrl: string;
+  searchPrompt: string;
+  rules: { text: string; active: boolean }[];
+  recentFeedback?: AgentRunInput['recentFeedback'];
+  stage?: JobRecord['stage'];
+}): Promise<JobRecord> {
+  let normalizedUrl = input.jobUrl.trim();
+  if (!normalizedUrl) {
+    throw new Error('Please enter a job posting URL.');
+  }
+  if (!/^https?:\/\//i.test(normalizedUrl)) {
+    normalizedUrl = `https://${normalizedUrl}`;
+  }
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(normalizedUrl);
+  } catch {
+    throw new Error('Please enter a valid http:// or https:// job posting URL.');
+  }
+
+  if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+    throw new Error('Only http:// and https:// URLs are supported.');
+  }
+
+  const canonicalUrl = parsedUrl.toString();
+  const domain = extractDomain(canonicalUrl);
+  const atsType = detectAtsFromUrl(canonicalUrl);
+  const ai = getGeminiClient();
+
+  let pageMarkdown = '';
+  try {
+    const res = await fetchWithTimeout(canonicalUrl, 9000);
+    if (res.ok) {
+      const html = await res.text();
+      pageMarkdown = htmlToCompactMarkdown(html, canonicalUrl, 16000);
+    }
+  } catch {
+    // Will fall back to live Google Search grounding
+  }
+
+  const activeRules = (input.rules ?? [])
+    .filter((r) => r.active)
+    .map((r) => `- ${r.text}`)
+    .join('\n');
+
+  const feedbackText = (input.recentFeedback ?? [])
+    .slice(0, 10)
+    .map((f) =>
+      f.vote === 'up'
+        ? `- UPVOTED: ${f.jobTitle} at ${f.company}`
+        : `- HIDDEN (${f.reason || 'not a fit'}): ${f.jobTitle} at ${f.company}`
+    )
+    .join('\n');
+
+  const promptCore = `Extract the job details from this posting and score how well it fits the candidate's target criteria.
+
+URL: ${canonicalUrl}
+
+CANDIDATE SEARCH CRITERIA:
+${input.searchPrompt || 'General career search'}
+
+ACTIVE RULES:
+${activeRules || 'None'}
+
+RECENT FEEDBACK:
+${feedbackText || 'None'}
+
+Respond ONLY with a valid JSON object matching this exact structure (no markdown commentary):
+{
+  "title": "Exact role title (never leave blank if determinable from the posting or URL)",
+  "company": "Company name",
+  "location": "City, State / Remote",
+  "locationType": "Remote" | "Hybrid" | "Onsite",
+  "employmentType": "Full-time" | "Internship" | "Part-time" | "Contract",
+  "salaryMin": integer USD annual base or null,
+  "salaryMax": integer USD annual base or null,
+  "salaryLabel": "e.g. $180k - $220k or Not listed",
+  "deadlineAt": "YYYY-MM-DD or null",
+  "skills": ["up to 5 core skills/keywords"],
+  "summary": "2-3 sentence concise overview of the role",
+  "fullDescription": "Complete, well-formatted multi-section job description (About the Role, Responsibilities, Qualifications, Compensation & Benefits) with short headings and bullet points (- ).",
+  "matchScore": integer 0-100,
+  "matchReason": "1-2 sentence explanation of fit against candidate criteria"
+}`;
+
+  let extracted: {
+    title?: string;
+    company?: string;
+    location?: string;
+    locationType?: string;
+    employmentType?: string;
+    salaryMin?: number | null;
+    salaryMax?: number | null;
+    salaryLabel?: string;
+    deadlineAt?: string | null;
+    skills?: string[];
+    summary?: string;
+    fullDescription?: string;
+    matchScore?: number;
+    matchReason?: string;
+  } = {};
+
+  if (pageMarkdown.length >= 220) {
+    const response = await ai.models.generateContent({
+      model: 'gemini-4-hydrogen',
+      contents: `${promptCore}\n\nFETCHED PAGE CONTENT:\n${pageMarkdown}`,
+      config: {
+        responseMimeType: 'application/json',
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      },
+    });
+    extracted = parseJsonFromModelText(response.text ?? '{}', {});
+  } else {
+    const response = await ai.models.generateContent({
+      model: 'gemini-4-hydrogen',
+      contents: `Use Google Search to look up the public job posting at ${canonicalUrl} (the page required JS or blocked direct fetch) and extract all available details.\n\n${promptCore}`,
+      config: {
+        tools: [{ googleSearch: {} }],
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      },
+    });
+    extracted = parseJsonFromModelText(response.text ?? '{}', {});
+  }
+
+  const now = new Date();
+  const discoveredAt = now.toISOString().slice(0, 10);
+  const discoveredTime = now.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+
+  const fallbackCompany =
+    domain
+      .replace(/\.(com|io|co|ai|org|net|app|jobs)$/i, '')
+      .split('.')
+      .pop() || 'Unknown Company';
+  const company =
+    extracted.company?.trim() ||
+    fallbackCompany.charAt(0).toUpperCase() + fallbackCompany.slice(1);
+  const title = extracted.title?.trim() || 'Role from URL';
+  const fullDescription =
+    (extracted.fullDescription || '').trim().slice(0, 12000) ||
+    (extracted.summary || '').trim() ||
+    pageMarkdown.slice(0, 8000);
+  const summary =
+    (extracted.summary || '').trim().slice(0, 400) ||
+    fullDescription.slice(0, 260) ||
+    `Manually added from ${canonicalUrl}`;
+
+  const rawScore =
+    typeof extracted.matchScore === 'number' && !Number.isNaN(extracted.matchScore)
+      ? Math.max(0, Math.min(100, Math.round(extracted.matchScore)))
+      : 78;
+
+  const employmentType = normalizeEmploymentTypeServer(
+    extracted.employmentType,
+    title,
+    `${summary}\n${fullDescription}`
+  );
+  const location = extracted.location?.trim() || 'Unspecified';
+  const isRemoteHint = /remote/i.test(`${location} ${title}`) ? true : null;
+
+  return {
+    id: `job-url-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    urlHash: hashCanonicalUrl(canonicalUrl),
+    title,
+    company,
+    companyDomain: domain,
+    stage: input.stage || 'saved',
+    isNew: false,
+    matchScore: rawScore,
+    matchReason:
+      extracted.matchReason?.trim() ||
+      `Added manually from ${domain} and scored against your search criteria.`,
+    salaryMin: typeof extracted.salaryMin === 'number' ? extracted.salaryMin : null,
+    salaryMax: typeof extracted.salaryMax === 'number' ? extracted.salaryMax : null,
+    salaryLabel: extracted.salaryLabel?.trim() || 'Not listed',
+    location,
+    locationType: normalizeLocationType(extracted.locationType, isRemoteHint),
+    employmentType,
+    isMbaRole: detectIsMbaRoleServer(title),
+    sourceId: 'src-manual-url',
+    sourceName: 'Manual URL',
+    atsType,
+    jobUrl: canonicalUrl,
+    discoveredAt,
+    discoveredTime,
+    deadlineAt:
+      extracted.deadlineAt && /^\d{4}-\d{2}-\d{2}$/.test(extracted.deadlineAt)
+        ? extracted.deadlineAt
+        : null,
+    skills:
+      Array.isArray(extracted.skills) && extracted.skills.length > 0
+        ? extracted.skills.map((s) => String(s).trim()).filter(Boolean).slice(0, 5)
+        : ['General'],
+    summary,
+    fullDescription,
+    notes: '',
+    feedback: null,
+  };
 }

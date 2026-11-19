@@ -1,5 +1,11 @@
 import crypto from 'node:crypto';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import {
+  detectIsMbaRoleServer,
+  enrichIncompleteJobs,
+  isPlaceholderJobUrl,
+  normalizeEmploymentTypeServer,
+} from './agentRunner.ts';
 import type {
   AgentRunReport,
   DislikeReason,
@@ -285,7 +291,12 @@ ${parsedMessages
       salaryLabel: item.salaryLabel || 'Not listed',
       location: item.location || 'Unspecified',
       locationType: locType,
-      employmentType: item.employmentType || 'Full-time',
+      employmentType: normalizeEmploymentTypeServer(
+        item.employmentType,
+        item.title,
+        item.fullDescription || item.summary
+      ),
+      isMbaRole: detectIsMbaRoleServer(item.title),
       sourceId: 'src-whatsapp',
       sourceName: `WhatsApp · ${groupLabel}`,
       atsType: 'WhatsApp',
@@ -302,6 +313,54 @@ ${parsedMessages
       notes: item.referrerNote ? `WhatsApp note: ${item.referrerNote}` : '',
       feedback: null,
     });
+  }
+
+  const needingEnrichment = newJobs.filter(
+    (j) => isPlaceholderJobUrl(j.jobUrl) || (j.fullDescription ?? '').trim().length < 300
+  );
+  if (needingEnrichment.length > 0) {
+    try {
+      const patches = await enrichIncompleteJobs(
+        needingEnrichment.map((j) => ({
+          id: j.id,
+          title: j.title,
+          company: j.company,
+          jobUrl: j.jobUrl,
+          salaryLabel: j.salaryLabel,
+          location: j.location,
+          locationType: j.locationType,
+          employmentType: j.employmentType,
+          skills: j.skills,
+          summary: j.summary,
+          fullDescription: j.fullDescription,
+          notes: j.notes,
+        })),
+        input.searchPrompt,
+        input.rules
+      );
+      const patchById = new Map(patches.map((p) => [p.id, p]));
+      for (const job of newJobs) {
+        const patch = patchById.get(job.id);
+        if (!patch) continue;
+        if (patch.title) {
+          job.title = patch.title;
+          job.isMbaRole = detectIsMbaRoleServer(patch.title);
+        }
+        if (patch.jobUrl) job.jobUrl = patch.jobUrl;
+        if (patch.companyDomain) job.companyDomain = patch.companyDomain;
+        if (patch.salaryLabel) job.salaryLabel = patch.salaryLabel;
+        if (typeof patch.salaryMin === 'number') job.salaryMin = patch.salaryMin;
+        if (typeof patch.salaryMax === 'number') job.salaryMax = patch.salaryMax;
+        if (patch.location) job.location = patch.location;
+        if (patch.locationType) job.locationType = patch.locationType;
+        if (patch.employmentType) job.employmentType = patch.employmentType;
+        if (patch.skills && patch.skills.length > 0) job.skills = patch.skills;
+        if (patch.summary) job.summary = patch.summary;
+        if (patch.fullDescription) job.fullDescription = patch.fullDescription;
+      }
+    } catch (err) {
+      console.error('Post-WhatsApp enrichment failed (non-blocking):', err);
+    }
   }
 
   return {

@@ -14,10 +14,15 @@ function createGoogleProvider(includeGmailScope: boolean): GoogleAuthProvider {
     for (const scope of SCOPES) {
       provider.addScope(scope);
     }
+    provider.setCustomParameters({
+      prompt: 'consent select_account',
+      include_granted_scopes: 'true',
+    });
+  } else {
+    provider.setCustomParameters({
+      prompt: 'select_account',
+    });
   }
-  provider.setCustomParameters({
-    prompt: 'select_account',
-  });
   return provider;
 }
 

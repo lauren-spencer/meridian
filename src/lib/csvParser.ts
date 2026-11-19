@@ -4,6 +4,7 @@ import type {
   MappableJobField,
   PipelineStage,
 } from '../types/job';
+import { detectIsMbaRole, normalizeEmploymentType } from './resumeClient';
 
 export interface ParsedTabularData {
   headers: string[];
@@ -340,7 +341,9 @@ export function buildNormalizedJobsFromMapping(params: {
     const stageRaw = getVal(row, 'stage');
     const stage = normalizeStage(stageRaw);
     const locationType = normalizeLocationType(getVal(row, 'locationType'), location);
-    const employmentType = getVal(row, 'employmentType') || 'Full-time';
+    const rawEmploymentType = getVal(row, 'employmentType');
+    const summary = getVal(row, 'summary');
+    const employmentType = normalizeEmploymentType(rawEmploymentType, finalTitle, summary);
     const deadlineAt = normalizeIsoDate(getVal(row, 'deadlineAt'));
     const discoveredAt = normalizeIsoDate(getVal(row, 'discoveredAt')) || todayIso;
     const skillsRaw = getVal(row, 'skills');
@@ -351,7 +354,6 @@ export function buildNormalizedJobsFromMapping(params: {
           .filter(Boolean)
           .slice(0, 10)
       : [];
-    const summary = getVal(row, 'summary');
     const sourceName =
       getVal(row, 'sourceName') ||
       `Import · ${params.fileName.replace(/\.[^.]+$/, '') || 'Uploaded List'}`;
@@ -371,7 +373,8 @@ export function buildNormalizedJobsFromMapping(params: {
       salaryLabel: salaryLabel.slice(0, 75),
       location: location.slice(0, 140),
       locationType,
-      employmentType: employmentType.slice(0, 50),
+      employmentType,
+      isMbaRole: detectIsMbaRole(finalTitle),
       sourceId: 'src-csv-import',
       sourceName: sourceName.slice(0, 140),
       atsType: 'CSV Import',

@@ -93,6 +93,28 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidCoverLetterSample(data, userId, sampleId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'roleType', 'fileName', 'rawText', 'uploadedAt',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'roleType', 'fileName', 'rawText', 'uploadedAt',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.id == sampleId &&
+        isValidId(data.ownerId) &&
+        data.ownerId == request.auth.uid &&
+        data.ownerId == userId &&
+        isBoundedString(data.roleType, 1, 120) &&
+        isBoundedString(data.fileName, 1, 200) &&
+        isBoundedString(data.rawText, 1, 25000) &&
+        isBoundedString(data.uploadedAt, 0, 32) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
     function isValidStage(stage) {
       return stage in ['inbox', 'saved', 'applied', 'interviewing', 'offer', 'archived'];
     }
@@ -124,7 +146,7 @@ service cloud.firestore {
           'id', 'ownerId', 'urlHash', 'title', 'company', 'companyDomain',
           'stage', 'isNew', 'matchScore', 'previousMatchScore', 'matchReason',
           'salaryMin', 'salaryMax', 'salaryLabel', 'location', 'locationType',
-          'employmentType', 'sourceId', 'sourceName', 'atsType', 'jobUrl',
+          'employmentType', 'isMbaRole', 'sourceId', 'sourceName', 'atsType', 'jobUrl',
           'discoveredAt', 'discoveredTime', 'deadlineAt', 'skills', 'summary',
           'fullDescription', 'networkingContacts',
           'notes', 'feedback', 'dislikeReason', 'createdAt', 'updatedAt'
@@ -151,6 +173,7 @@ service cloud.firestore {
         isBoundedString(data.location, 0, 160) &&
         isValidLocationType(data.locationType) &&
         (!('employmentType' in data) || isBoundedString(data.employmentType, 0, 60)) &&
+        (!('isMbaRole' in data) || data.isMbaRole is bool) &&
         isBoundedString(data.sourceId, 0, 128) &&
         isBoundedString(data.sourceName, 0, 160) &&
         isValidAtsType(data.atsType) &&
@@ -391,16 +414,20 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly([
               'networkingContacts', 'updatedAt'
             ]) ||
-            // Action 5: Full job description update
+            // Action 5: Full job description & web URL discovery update
             incoming().diff(existing()).affectedKeys().hasOnly([
-              'fullDescription', 'updatedAt'
+              'fullDescription', 'jobUrl', 'companyDomain', 'employmentType', 'updatedAt'
             ]) ||
             // Action 6: Automated enrichment of missing role details during agent pulls
             incoming().diff(existing()).affectedKeys().hasOnly([
               'title', 'companyDomain', 'salaryMin', 'salaryMax', 'salaryLabel',
-              'location', 'locationType', 'employmentType', 'jobUrl', 'skills',
+              'location', 'locationType', 'employmentType', 'isMbaRole', 'jobUrl', 'skills',
               'summary', 'fullDescription', 'matchScore', 'previousMatchScore',
               'matchReason', 'updatedAt'
+            ]) ||
+            // Action 7: Manual employment type or MBA role flag update
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'employmentType', 'isMbaRole', 'updatedAt'
             ])
           );
 
@@ -577,6 +604,35 @@ service cloud.firestore {
           );
 
         allow delete: if isValidId(userId) && isValidId(companyId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+      }
+
+      // Subcollection: Role-Specific Uploaded Cover Letter Samples
+      match /coverLetterSamples/{sampleId} {
+        allow get: if isValidId(userId) && isValidId(sampleId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+        allow list: if isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
+
+        allow create: if isValidId(userId) &&
+          isValidId(sampleId) &&
+          isVerifiedOwner(userId) &&
+          isValidCoverLetterSample(incoming(), userId, sampleId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          parentUserExists(userId);
+
+        allow update: if isValidId(userId) &&
+          isValidId(sampleId) &&
+          isVerifiedOwner(userId) &&
+          isValidCoverLetterSample(incoming(), userId, sampleId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().id == existing().id &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'roleType', 'fileName', 'rawText', 'uploadedAt', 'updatedAt'
+            ])
+          );
+
+        allow delete: if isValidId(userId) && isValidId(sampleId) && isVerifiedOwner(userId) && existing().ownerId == request.auth.uid;
       }
     }
   }

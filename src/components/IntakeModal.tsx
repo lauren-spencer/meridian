@@ -1255,71 +1255,86 @@ export function IntakeModal({
                   </div>
                 )}
 
-                {showSlackDetails && !slackConnected && (
-                  <div className="p-3.5 bg-zinc-50 border border-zinc-200 rounded-md text-[11.5px] text-zinc-600 space-y-2">
-                    <div className="font-semibold text-zinc-900">
-                      Step-by-step: How to connect Slack
-                    </div>
-                    <ol className="list-decimal pl-4 space-y-1.5 leading-relaxed">
-                      <li>
-                        Visit{' '}
-                        <a
-                          href="https://api.slack.com/apps"
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-blue-600 hover:underline font-medium"
-                        >
-                          api.slack.com/apps
-                        </a>{' '}
-                        and click <strong>Create New App</strong> → <strong>From scratch</strong>, then pick your workspace.
-                      </li>
-                      <li>
-                        Open <strong>OAuth &amp; Permissions</strong> in the left sidebar and add this Redirect URL:
-                        <div className="mt-1 flex items-center gap-1.5">
-                          <div className="flex-1 font-mono text-[11px] bg-white border border-zinc-200 rounded px-2 py-1 text-zinc-800 break-all select-all">
-                            {slackRedirectUri || `${window.location.origin}/api/slack/callback`}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const target =
-                                slackRedirectUri || `${window.location.origin}/api/slack/callback`;
-                              void navigator.clipboard?.writeText(target);
-                              setCopiedSlackUrl(true);
-                              window.setTimeout(() => setCopiedSlackUrl(false), 1800);
-                            }}
-                            title="Copy Redirect URL"
-                            className="p-1.5 bg-white border border-zinc-200 hover:bg-zinc-100 rounded text-zinc-600 cursor-pointer shrink-0"
+                {showSlackDetails && !slackConnected && (() => {
+                  const activeCallback = `${window.location.origin}/api/slack/callback`;
+                  const bestSlackRedirect =
+                    (slackRedirectUri && !slackRedirectUri.includes('localhost')
+                      ? slackRedirectUri
+                      : null) ||
+                    (!activeCallback.includes('localhost') ? activeCallback : null) ||
+                    slackRedirectUri ||
+                    activeCallback;
+                  return (
+                    <div className="p-3.5 bg-zinc-50 border border-zinc-200 rounded-md text-[11.5px] text-zinc-600 space-y-2">
+                      <div className="font-semibold text-zinc-900">
+                        Step-by-step: How to connect Slack
+                      </div>
+                      <ol className="list-decimal pl-4 space-y-1.5 leading-relaxed">
+                        <li>
+                          Visit{' '}
+                          <a
+                            href="https://api.slack.com/apps"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-blue-600 hover:underline font-medium"
                           >
-                            {copiedSlackUrl ? (
-                              <Check className="w-3.5 h-3.5 text-emerald-600" />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                        </div>
-                      </li>
-                      <li>
-                        Scroll to <strong>User Token Scopes</strong> and add{' '}
-                        <code className="font-mono text-zinc-800">channels:read</code>,{' '}
-                        <code className="font-mono text-zinc-800">channels:history</code>,{' '}
-                        <code className="font-mono text-zinc-800">groups:read</code>, and{' '}
-                        <code className="font-mono text-zinc-800">groups:history</code>.
-                      </li>
-                      <li>
-                        Copy your <strong>Client ID</strong> and <strong>Client Secret</strong> from <strong>Basic Information</strong> into your app environment variables (<code className="font-mono text-zinc-800">SLACK_CLIENT_ID</code> and <code className="font-mono text-zinc-800">SLACK_CLIENT_SECRET</code>).
-                        {slackHasClientId && slackHasClientSecret && (
-                          <span className="ml-1 text-emerald-700 font-medium">
-                            (Already configured!)
+                            api.slack.com/apps
+                          </a>{' '}
+                          and open your app (or click <strong>Create New App → From scratch</strong>).{' '}
+                          <span className="text-zinc-500">
+                            Ignore Slack&apos;s &ldquo;Build with AI / bolt-blank-template&rdquo; prompt — Meridian already has the Slack connector built in.
                           </span>
-                        )}
-                      </li>
-                      <li>
-                        You can finish this anytime later — just open <strong>Sources</strong> in the left sidebar and click <strong>Connect Slack</strong>.
-                      </li>
-                    </ol>
-                  </div>
-                )}
+                        </li>
+                        <li>
+                          Open <strong>OAuth &amp; Permissions</strong> in the left sidebar and add this Redirect URL:
+                          <div className="mt-1 flex items-center gap-1.5">
+                            <div className="flex-1 font-mono text-[11px] bg-white border border-zinc-200 rounded px-2 py-1 text-zinc-800 break-all select-all">
+                              {bestSlackRedirect}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void navigator.clipboard?.writeText(bestSlackRedirect);
+                                setCopiedSlackUrl(true);
+                                window.setTimeout(() => setCopiedSlackUrl(false), 1800);
+                              }}
+                              title="Copy Redirect URL"
+                              className="p-1.5 bg-white border border-zinc-200 hover:bg-zinc-100 rounded text-zinc-600 cursor-pointer shrink-0"
+                            >
+                              {copiedSlackUrl ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </li>
+                        <li>
+                          Scroll to <strong>User Token Scopes</strong> and add{' '}
+                          <code className="font-mono text-zinc-800">channels:read</code>,{' '}
+                          <code className="font-mono text-zinc-800">channels:history</code>,{' '}
+                          <code className="font-mono text-zinc-800">groups:read</code>, and{' '}
+                          <code className="font-mono text-zinc-800">groups:history</code>.
+                        </li>
+                        <li>
+                          Copy your <strong>Client ID</strong> and <strong>Client Secret</strong> from <strong>Basic Information → App Credentials</strong> and save them as{' '}
+                          <code className="font-mono text-zinc-800">SLACK_CLIENT_ID</code> and{' '}
+                          <code className="font-mono text-zinc-800">SLACK_CLIENT_SECRET</code> in{' '}
+                          <strong>AI Studio → Settings → Secrets</strong> (or in your hosting provider&apos;s{' '}
+                          <strong>Environment Variables</strong> tab, e.g., Render, then redeploy).
+                          {slackHasClientId && slackHasClientSecret && (
+                            <span className="ml-1 text-emerald-700 font-medium">
+                              (Already configured!)
+                            </span>
+                          )}
+                        </li>
+                        <li>
+                          You can finish this anytime later — just open <strong>Sources &amp; Channels</strong> in the left sidebar and click <strong>Connect Slack</strong>.
+                        </li>
+                      </ol>
+                    </div>
+                  );
+                })()}
 
                 <div className="flex gap-2">
                   <input

@@ -182,6 +182,9 @@
           "type": "string",
           "maxLength": 60
         },
+        "isMbaRole": {
+          "type": "boolean"
+        },
         "sourceId": {
           "type": "string",
           "maxLength": 128
@@ -614,6 +617,53 @@
         }
       },
       "required": ["id", "ownerId", "name", "enabled", "lastCheckedAt", "lastFoundCount", "createdAt", "updatedAt"]
+    },
+    "CoverLetterSample": {
+      "title": "CoverLetterSample",
+      "description": "User's uploaded cover letter sample mapped to a target role type to unlock tailored cover letter generation.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roleType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "fileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "rawText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 25000
+        },
+        "uploadedAt": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "ownerId", "roleType", "fileName", "rawText", "uploadedAt", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -652,6 +702,10 @@
     "/users/{userId}/resumes/{resumeId}": {
       "schema": { "$ref": "#/entities/RoleResume" },
       "description": "User's role-specific uploaded resumes for per-job tailoring (owner-only)."
+    },
+    "/users/{userId}/coverLetterSamples/{sampleId}": {
+      "schema": { "$ref": "#/entities/CoverLetterSample" },
+      "description": "User's role-specific uploaded cover letter samples that unlock tailored cover letter generation (owner-only)."
     }
   }
 }

@@ -16,6 +16,7 @@ import { buildGmailQueryFromSenders } from './intakeHelpers';
 import type {
   AtsType,
   CareerExperienceItem,
+  CoverLetterSample,
   DislikeReason,
   FeedbackEntry,
   ImportBatchRecord,
@@ -208,6 +209,7 @@ export interface LoadedCloudWorkspace {
   events: JobEvent[];
   imports: ImportBatchRecord[];
   resumes: RoleResume[];
+  coverLetterSamples: CoverLetterSample[];
   targetCompanies: TargetCompany[];
 }
 
@@ -235,6 +237,7 @@ export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspa
       events: [],
       imports: [],
       resumes: [],
+      coverLetterSamples: [],
       targetCompanies: [],
     };
   }
@@ -281,6 +284,7 @@ export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspa
     rawEvents,
     rawImports,
     rawResumes,
+    rawCoverLetterSamples,
     rawTargetCompanies,
   ] = await Promise.all([
     fetchSubcollection('jobs'),
@@ -290,6 +294,7 @@ export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspa
     fetchSubcollection('events'),
     fetchSubcollection('imports'),
     fetchSubcollection('resumes'),
+    fetchSubcollection('coverLetterSamples'),
     fetchSubcollection('targetCompanies'),
   ]);
 
@@ -311,6 +316,10 @@ export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspa
     location: clampStr(j.location, 160),
     locationType: validLocType(j.locationType),
     employmentType: typeof j.employmentType === 'string' ? j.employmentType : undefined,
+    isMbaRole:
+      typeof j.isMbaRole === 'boolean'
+        ? j.isMbaRole
+        : /\bmba\b/i.test(String(j.title || '')),
     sourceId: clampStr(j.sourceId, 128),
     sourceName: clampStr(j.sourceName, 160),
     atsType: validAts(j.atsType),
@@ -394,6 +403,14 @@ export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspa
     uploadedAt: clampStr(res.uploadedAt, 32, 'Recent'),
   }));
 
+  const coverLetterSamples: CoverLetterSample[] = rawCoverLetterSamples.map((sample) => ({
+    id: String(sample.id),
+    roleType: clampStr(sample.roleType, 120),
+    fileName: clampStr(sample.fileName, 200),
+    rawText: clampStr(sample.rawText, 25000),
+    uploadedAt: clampStr(sample.uploadedAt, 32, 'Recent'),
+  }));
+
   const targetCompanies: TargetCompany[] = rawTargetCompanies.map((c) => ({
     id: String(c.id),
     name: clampStr(c.name, 160),
@@ -419,6 +436,7 @@ export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspa
     events,
     imports,
     resumes,
+    coverLetterSamples,
     targetCompanies,
   };
 }
@@ -598,6 +616,10 @@ function serializeJobForCreate(uid: string, job: JobRecord): {
   if (typeof job.employmentType === 'string' && job.employmentType.trim()) {
     data.employmentType = clampStr(job.employmentType, 60);
   }
+  data.isMbaRole =
+    typeof job.isMbaRole === 'boolean'
+      ? job.isMbaRole
+      : /\bmba\b/i.test(job.title || '');
   if (typeof job.fullDescription === 'string' && job.fullDescription.trim()) {
     data.fullDescription = clampStr(job.fullDescription, 16000);
   }
@@ -690,15 +712,47 @@ export async function updateJobNetworkingContactsInCloud(
 export async function updateJobFullDescriptionInCloud(
   uid: string,
   jobId: string,
-  fullDescription: string
+  fullDescription: string,
+  extra?: { jobUrl?: string; companyDomain?: string; employmentType?: string }
 ): Promise<void> {
   const id = safeId(jobId, 'job');
   const path = `users/${uid}/jobs/${id}`;
+  const payload: Record<string, unknown> = {
+    fullDescription: clampStr(fullDescription, 16000),
+    updatedAt: serverTimestamp(),
+  };
+  if (extra?.jobUrl && extra.jobUrl.trim()) {
+    payload.jobUrl = clampStr(extra.jobUrl.trim(), 1000);
+  }
+  if (extra?.companyDomain && extra.companyDomain.trim()) {
+    payload.companyDomain = clampStr(extra.companyDomain.trim(), 160);
+  }
+  if (extra?.employmentType && extra.employmentType.trim()) {
+    payload.employmentType = clampStr(extra.employmentType.trim(), 60);
+  }
   try {
-    await updateDoc(doc(db, 'users', uid, 'jobs', id), {
-      fullDescription: clampStr(fullDescription, 16000),
-      updatedAt: serverTimestamp(),
-    });
+    await updateDoc(doc(db, 'users', uid, 'jobs', id), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function updateJobAttributesInCloud(
+  uid: string,
+  jobId: string,
+  patch: { employmentType?: string; isMbaRole?: boolean }
+): Promise<void> {
+  const id = safeId(jobId, 'job');
+  const path = `users/${uid}/jobs/${id}`;
+  const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+  if (typeof patch.employmentType === 'string' && patch.employmentType.trim()) {
+    payload.employmentType = clampStr(patch.employmentType.trim(), 60);
+  }
+  if (typeof patch.isMbaRole === 'boolean') {
+    payload.isMbaRole = patch.isMbaRole;
+  }
+  try {
+    await updateDoc(doc(db, 'users', uid, 'jobs', id), payload);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -789,6 +843,9 @@ export async function updateJobsEnrichmentBatchInCloud(
       }
       if (typeof p.employmentType === 'string' && p.employmentType.trim()) {
         payload.employmentType = clampStr(p.employmentType.trim(), 60);
+      }
+      if (typeof p.isMbaRole === 'boolean') {
+        payload.isMbaRole = p.isMbaRole;
       }
       if (typeof p.jobUrl === 'string' && p.jobUrl.trim()) {
         payload.jobUrl = clampStr(p.jobUrl.trim(), 1000);
@@ -1189,6 +1246,60 @@ export async function deleteTargetCompanyInCloud(
   const path = `users/${uid}/targetCompanies/${id}`;
   try {
     await deleteDoc(doc(db, 'users', uid, 'targetCompanies', id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function upsertCoverLetterSampleInCloud(
+  uid: string,
+  sample: CoverLetterSample
+): Promise<void> {
+  const id = safeId(sample.id, 'cl');
+  const path = `users/${uid}/coverLetterSamples/${id}`;
+  const ref = doc(db, 'users', uid, 'coverLetterSamples', id);
+  const roleType = clampStr(sample.roleType || 'General', 120) || 'General';
+  const fileName = clampStr(sample.fileName || 'cover-letter.docx', 200) || 'cover-letter.docx';
+  const rawText = clampStr(sample.rawText || ' ', 25000) || ' ';
+  const uploadedAt = clampStr(
+    sample.uploadedAt || new Date().toISOString().slice(0, 10),
+    32
+  );
+  try {
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        id,
+        ownerId: uid,
+        roleType,
+        fileName,
+        rawText,
+        uploadedAt,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await updateDoc(ref, {
+        roleType,
+        fileName,
+        rawText,
+        uploadedAt,
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function deleteCoverLetterSampleInCloud(
+  uid: string,
+  sampleId: string
+): Promise<void> {
+  const id = safeId(sampleId, 'cl');
+  const path = `users/${uid}/coverLetterSamples/${id}`;
+  try {
+    await deleteDoc(doc(db, 'users', uid, 'coverLetterSamples', id));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }

@@ -98,7 +98,7 @@ export function Sidebar({
     },
     {
       id: 'resumes',
-      label: 'Resumes & Context',
+      label: 'Resumes & Cover Letters',
       icon: FileText,
       meta: resumeCount > 0 ? `${resumeCount}` : undefined,
     },

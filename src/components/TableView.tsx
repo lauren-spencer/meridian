@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   ArrowUpDown,
   Building2,
+  Link2,
   RefreshCw,
   Search,
   ThumbsDown,
@@ -12,11 +13,17 @@ import {
 } from 'lucide-react';
 import {
   DislikeReason,
+  EmploymentType,
   JobRecord,
   JobSource,
   LocationType,
   PipelineStage,
 } from '../types/job';
+import {
+  EMPLOYMENT_TYPES,
+  detectIsMbaRole,
+  normalizeEmploymentType,
+} from '../lib/resumeClient';
 import { DislikeReasonPopover } from './DislikeReasonPopover';
 
 type TableTab = 'new' | 'active' | 'all' | 'archived';
@@ -33,6 +40,8 @@ interface TableViewProps {
   onThumbsDown: (jobId: string, reason?: DislikeReason) => void;
   onRestoreJob: (jobId: string) => void;
   onDeleteJob: (jobId: string) => void;
+  onToggleMbaRole: (jobId: string, isMbaRole: boolean) => void;
+  onOpenAddByUrl?: () => void;
   onMoveUntitledToTargetCompanies?: () => void;
   onRunAgent: () => void;
   onRescoreActiveJobs: () => void;
@@ -73,6 +82,8 @@ export function TableView({
   onThumbsDown,
   onRestoreJob,
   onDeleteJob,
+  onToggleMbaRole,
+  onOpenAddByUrl,
   onMoveUntitledToTargetCompanies,
   onRunAgent,
   onRescoreActiveJobs,
@@ -81,6 +92,8 @@ export function TableView({
   const [tab, setTab] = useState<TableTab>(initialTab);
   const [search, setSearch] = useState('');
   const [locationFilter, setLocationFilter] = useState<'all' | LocationType>('all');
+  const [employmentTypeFilter, setEmploymentTypeFilter] = useState<'all' | EmploymentType>('all');
+  const [mbaOnly, setMbaOnly] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [sortField, setSortField] = useState<SortField>('discoveredAt');
   const [sortDir, setSortDir] = useState<SortDirection>('desc');
@@ -109,6 +122,18 @@ export function TableView({
         if (tab === 'active' && job.stage === 'archived') return false;
         if (tab === 'archived' && job.stage !== 'archived') return false;
         if (locationFilter !== 'all' && job.locationType !== locationFilter) return false;
+        if (employmentTypeFilter !== 'all') {
+          const normalizedType = normalizeEmploymentType(
+            job.employmentType,
+            job.title,
+            job.summary
+          );
+          if (normalizedType !== employmentTypeFilter) return false;
+        }
+        if (mbaOnly) {
+          const isMba = job.isMbaRole ?? detectIsMbaRole(job.title);
+          if (!isMba) return false;
+        }
         if (sourceFilter !== 'all') {
           if (sourceFilter === 'target-company') {
             if (job.atsType !== 'Target Company') return false;
@@ -117,7 +142,7 @@ export function TableView({
           }
         }
         if (q) {
-          const haystack = `${job.title} ${job.company} ${job.location} ${job.skills.join(' ')} ${job.sourceName}`.toLowerCase();
+          const haystack = `${job.title} ${job.company} ${job.location} ${job.employmentType || ''} ${job.skills.join(' ')} ${job.sourceName}`.toLowerCase();
           if (!haystack.includes(q)) return false;
         }
         return true;
@@ -139,7 +164,17 @@ export function TableView({
         }
         return sortDir === 'asc' ? cmp : -cmp;
       });
-  }, [jobs, tab, search, locationFilter, sourceFilter, sortField, sortDir]);
+  }, [
+    jobs,
+    tab,
+    search,
+    locationFilter,
+    employmentTypeFilter,
+    mbaOnly,
+    sourceFilter,
+    sortField,
+    sortDir,
+  ]);
 
   const toggleSort = (field: SortField) => {
     if (sortField === field) {
@@ -242,6 +277,32 @@ export function TableView({
           </select>
 
           <select
+            aria-label="Filter by employment type"
+            value={employmentTypeFilter}
+            onChange={(e) =>
+              setEmploymentTypeFilter(e.target.value as 'all' | EmploymentType)
+            }
+            className="h-9 px-2.5 text-xs bg-white border border-zinc-200 rounded-md text-zinc-700 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+          >
+            <option value="all">All types</option>
+            {EMPLOYMENT_TYPES.map((et) => (
+              <option key={et} value={et}>
+                {et}
+              </option>
+            ))}
+          </select>
+
+          <label className="inline-flex items-center gap-1.5 h-9 px-2.5 text-xs text-zinc-700 bg-white border border-zinc-200 rounded-md cursor-pointer select-none whitespace-nowrap">
+            <input
+              type="checkbox"
+              checked={mbaOnly}
+              onChange={(e) => setMbaOnly(e.target.checked)}
+              className="rounded border-zinc-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
+            />
+            <span>MBA only</span>
+          </label>
+
+          <select
             aria-label="Filter by source"
             value={sourceFilter}
             onChange={(e) => setSourceFilter(e.target.value)}
@@ -252,6 +313,7 @@ export function TableView({
             <option value="src-slack">Slack Channels</option>
             <option value="src-whatsapp">WhatsApp Groups</option>
             <option value="src-csv-import">Uploaded CSV / JSON</option>
+            <option value="src-manual-url">Manual URL</option>
             <option value="target-company">Target Companies Watchlist</option>
             {sources.map((src) => (
               <option key={src.id} value={src.id}>
@@ -259,6 +321,18 @@ export function TableView({
               </option>
             ))}
           </select>
+
+          {onOpenAddByUrl && (
+            <button
+              type="button"
+              onClick={onOpenAddByUrl}
+              title="Add a single job posting by pasting its URL"
+              className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium text-zinc-800 bg-white border border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Link2 className="w-3.5 h-3.5 text-blue-600" />
+              <span>Add Role URL</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -313,6 +387,8 @@ export function TableView({
                     <ArrowUpDown className="w-3 h-3" />
                   </button>
                 </th>
+                <th className="py-2.5 px-3 w-24 whitespace-nowrap">Type</th>
+                <th className="py-2.5 px-3 text-center w-14 whitespace-nowrap">MBA</th>
                 <th className="py-2.5 px-3 text-right w-24 whitespace-nowrap">
                   <button
                     type="button"
@@ -351,7 +427,7 @@ export function TableView({
             <tbody className="divide-y divide-zinc-100 text-[13px]">
               {isAgentRunning && (
                 <tr className="bg-blue-50/30 animate-pulse">
-                  <td colSpan={8} className="py-3 px-4 text-xs text-blue-700">
+                  <td colSpan={10} className="py-3 px-4 text-xs text-blue-700">
                     Scanning configured ATS feeds, checking Target Companies, and enriching incomplete role details...
                   </td>
                 </tr>
@@ -359,7 +435,7 @@ export function TableView({
 
               {filteredJobs.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-12 px-4 text-center">
+                  <td colSpan={10} className="py-12 px-4 text-center">
                     <p className="text-sm font-medium text-zinc-900">
                       {tab === 'new'
                         ? 'Inbox clear — all newly pulled roles have been triaged.'
@@ -394,6 +470,8 @@ export function TableView({
                           onClick={() => {
                             setSearch('');
                             setLocationFilter('all');
+                            setEmploymentTypeFilter('all');
+                            setMbaOnly(false);
                             setSourceFilter('all');
                             setTab('active');
                           }}
@@ -407,6 +485,12 @@ export function TableView({
                 </tr>
               ) : (
                 filteredJobs.map((job) => {
+                  const normalizedType = normalizeEmploymentType(
+                    job.employmentType,
+                    job.title,
+                    job.summary
+                  );
+                  const isMba = job.isMbaRole ?? detectIsMbaRole(job.title);
                   const scoreColor =
                     job.matchScore >= 90
                       ? 'text-emerald-700'
@@ -457,6 +541,26 @@ export function TableView({
                             </>
                           )}
                         </div>
+                      </td>
+
+                      {/* Employment Type */}
+                      <td className="py-3 px-3 whitespace-nowrap align-middle text-xs text-zinc-700">
+                        {normalizedType}
+                      </td>
+
+                      {/* MBA Role checkbox */}
+                      <td
+                        className="py-3 px-3 text-center whitespace-nowrap align-middle"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isMba}
+                          onChange={(e) => onToggleMbaRole(job.id, e.target.checked)}
+                          aria-label={`Mark ${job.title} at ${job.company} as MBA role`}
+                          title={isMba ? 'MBA role (checked)' : 'Check to mark as MBA role'}
+                          className="rounded border-zinc-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                        />
                       </td>
 
                       {/* Match Score (+ optional delta after feedback re-scoring) */}

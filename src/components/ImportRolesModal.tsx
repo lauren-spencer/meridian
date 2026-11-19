@@ -6,6 +6,8 @@ import {
   Check,
   Database,
   FileSpreadsheet,
+  Link2,
+  Loader2,
   Sparkles,
   Upload,
   X,
@@ -21,13 +23,15 @@ import type {
   ColumnMappingSuggestion,
   JobRecord,
   MappableJobField,
+  PipelineStage,
 } from '../types/job';
 
 interface ImportRolesModalProps {
   open: boolean;
-  initialMode?: 'roles' | 'companies';
+  initialMode?: 'url' | 'roles' | 'companies';
   existingHashes: string[];
   onClose: () => void;
+  onAddJobByUrl?: (jobUrl: string, stage: PipelineStage) => Promise<void>;
   onImportJobs: (params: {
     jobs: JobRecord[];
     fileName: string;
@@ -75,10 +79,11 @@ export function ImportRolesModal({
   initialMode = 'roles',
   existingHashes,
   onClose,
+  onAddJobByUrl,
   onImportJobs,
   onImportTargetCompanies,
 }: ImportRolesModalProps) {
-  const [mode, setMode] = useState<'roles' | 'companies'>(initialMode);
+  const [mode, setMode] = useState<'url' | 'roles' | 'companies'>(initialMode);
   const [step, setStep] = useState<'upload' | 'map'>('upload');
   const [rawText, setRawText] = useState('');
   const [fileName, setFileName] = useState('pasted-roles.csv');
@@ -92,6 +97,11 @@ export function ImportRolesModal({
     useState(true);
   const [isImporting, setIsImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Single Role URL state
+  const [singleUrl, setSingleUrl] = useState('');
+  const [singleUrlStage, setSingleUrlStage] = useState<PipelineStage>('saved');
+  const [isAddingUrl, setIsAddingUrl] = useState(false);
 
   // Target Companies CSV state
   const [companyCsvText, setCompanyCsvText] = useState('');
@@ -243,6 +253,33 @@ export function ImportRolesModal({
     }
   };
 
+  const handleConfirmAddUrl = async () => {
+    const trimmed = singleUrl.trim();
+    if (!trimmed) {
+      setError('Please enter a job posting URL.');
+      return;
+    }
+    if (!onAddJobByUrl) {
+      setError('Adding roles by URL is not available right now.');
+      return;
+    }
+    setIsAddingUrl(true);
+    setError(null);
+    try {
+      await onAddJobByUrl(trimmed, singleUrlStage);
+      setSingleUrl('');
+      onClose();
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Could not extract job details from that URL.'
+      );
+    } finally {
+      setIsAddingUrl(false);
+    }
+  };
+
   const handleConfirmImport = async () => {
     const hasJobs = previewResult.jobs.length > 0;
     const hasCompanies = previewResult.extractedTargetCompanies.length > 0;
@@ -298,7 +335,9 @@ export function ImportRolesModal({
         {/* Header */}
         <div className="px-6 py-4 border-b border-zinc-200 flex items-center justify-between gap-4 shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
-            {mode === 'companies' ? (
+            {mode === 'url' ? (
+              <Link2 className="w-4 h-4 text-blue-600 shrink-0" />
+            ) : mode === 'companies' ? (
               <Building2 className="w-4 h-4 text-blue-600 shrink-0" />
             ) : (
               <Database className="w-4 h-4 text-blue-600 shrink-0" />
@@ -308,12 +347,16 @@ export function ImportRolesModal({
                 id="import-modal-title"
                 className="text-base font-semibold text-zinc-950 tracking-tight"
               >
-                {mode === 'companies'
+                {mode === 'url'
+                  ? 'Add a Role by URL'
+                  : mode === 'companies'
                   ? 'Upload Target Companies (CSV)'
                   : 'Import & Map Existing Roles'}
               </h2>
               <p className="text-xs text-zinc-500">
-                {mode === 'companies'
+                {mode === 'url'
+                  ? 'Paste any job posting link and Meridian will extract the full description, employment type, MBA flag, compensation, and match score.'
+                  : mode === 'companies'
                   ? 'Upload companies you want Meridian to watch for your desired roles during every agent pull.'
                   : 'Upload a CSV, TSV, or JSON job tracker export — rows without a role title can automatically become Target Companies.'}
               </p>
@@ -331,6 +374,24 @@ export function ImportRolesModal({
 
         {/* Mode Tabs */}
         <div className="px-6 pt-3 pb-0 border-b border-zinc-200 bg-zinc-50/70 flex items-center gap-5 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              setMode('url');
+              setError(null);
+            }}
+            className={`relative pb-2.5 inline-flex items-center gap-1.5 text-xs font-medium transition-colors cursor-pointer ${
+              mode === 'url'
+                ? 'text-zinc-950'
+                : 'text-zinc-500 hover:text-zinc-800'
+            }`}
+          >
+            <Link2 className="w-3.5 h-3.5" />
+            <span>Add Role by URL</span>
+            {mode === 'url' && (
+              <span className="absolute inset-x-0 bottom-0 h-0.5 bg-zinc-950 rounded-full" />
+            )}
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -377,7 +438,74 @@ export function ImportRolesModal({
             </div>
           )}
 
-          {mode === 'companies' ? (
+          {mode === 'url' ? (
+            <form
+              id="add-role-url-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void handleConfirmAddUrl();
+              }}
+              className="space-y-5"
+            >
+              <div className="space-y-2">
+                <label
+                  htmlFor="single-role-url-input"
+                  className="text-xs font-medium text-zinc-800"
+                >
+                  Job Posting URL
+                </label>
+                <div className="relative">
+                  <Link2 className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    id="single-role-url-input"
+                    type="url"
+                    required
+                    autoFocus
+                    value={singleUrl}
+                    onChange={(e) => setSingleUrl(e.target.value)}
+                    placeholder="https://boards.greenhouse.io/company/jobs/123456 or any careers link"
+                    className="w-full h-10 pl-9 pr-3 text-sm bg-white border border-zinc-200 rounded-lg text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                  />
+                </div>
+                <p className="text-[11px] text-zinc-500 leading-relaxed">
+                  Works with Greenhouse, Lever, Ashby, Workday, LinkedIn, Built In, or company careers pages. If a site blocks direct scraping, Meridian falls back to live web search automatically.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="single-role-stage-select"
+                    className="text-xs font-medium text-zinc-800"
+                  >
+                    Initial Pipeline Stage
+                  </label>
+                  <select
+                    id="single-role-stage-select"
+                    value={singleUrlStage}
+                    onChange={(e) =>
+                      setSingleUrlStage(e.target.value as PipelineStage)
+                    }
+                    className="w-full h-9 px-3 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                  >
+                    <option value="saved">Saved</option>
+                    <option value="inbox">Inbox (New)</option>
+                    <option value="applied">Applied</option>
+                    <option value="interviewing">Interviewing</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-zinc-50 border border-zinc-200 rounded-lg text-xs text-zinc-600 space-y-1">
+                <div className="font-medium text-zinc-900">
+                  What Meridian pulls automatically
+                </div>
+                <p className="leading-relaxed">
+                  Role title, company, full job description, employment type (Full-time / Internship / Part-time / Contract), MBA role detection, location &amp; work mode, compensation range, skills, and your personalized 0–100 match score.
+                </p>
+              </div>
+            </form>
+          ) : mode === 'companies' ? (
             <div className="space-y-5">
               <label className="block border border-dashed border-zinc-300 hover:border-blue-500 hover:bg-blue-50/20 rounded-lg p-7 text-center transition-colors cursor-pointer">
                 <input
@@ -721,7 +849,26 @@ export function ImportRolesModal({
             Cancel
           </button>
 
-          {mode === 'companies' ? (
+          {mode === 'url' ? (
+            <button
+              type="submit"
+              form="add-role-url-form"
+              disabled={isAddingUrl || !singleUrl.trim()}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-zinc-300 rounded-md transition-colors cursor-pointer disabled:cursor-not-allowed"
+            >
+              {isAddingUrl ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Fetching &amp; Scoring Role...</span>
+                </>
+              ) : (
+                <>
+                  <Link2 className="w-3.5 h-3.5" />
+                  <span>Fetch &amp; Add Role</span>
+                </>
+              )}
+            </button>
+          ) : mode === 'companies' ? (
             <button
               type="button"
               disabled={isImporting || parsedTargetCompanies.length === 0}

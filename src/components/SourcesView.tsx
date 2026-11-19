@@ -572,75 +572,106 @@ export function SourcesView({
               </div>
             )}
 
-            {showSlackSetup && (
-              <div className="p-3.5 bg-zinc-50 border border-zinc-200 rounded-md text-[11.5px] text-zinc-600 space-y-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-zinc-900">How to Set Up Slack</span>
-                  {slackHasClientId && slackHasClientSecret && (
-                    <span className="text-[11px] font-medium text-emerald-700">
-                      Credentials configured
-                    </span>
-                  )}
-                </div>
-                <ol className="list-decimal pl-4 space-y-1.5 leading-relaxed">
-                  <li>
-                    Create an app at{' '}
-                    <a
-                      href="https://api.slack.com/apps"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-blue-600 hover:underline font-medium"
-                    >
-                      api.slack.com/apps
-                    </a>{' '}
-                    (<strong>From scratch</strong>) for your workspace.
-                  </li>
-                  <li>
-                    Under <strong>OAuth &amp; Permissions</strong>, add User Token Scopes{' '}
-                    <code className="font-mono text-zinc-800">channels:read, channels:history, groups:read, groups:history</code> and register this Redirect URL:
-                    <div className="mt-1.5 space-y-1.5">
-                      {[
-                        {
-                          label: 'Redirect URL',
-                          value:
-                            slackDevRedirectUri ||
-                            slackRedirectUri ||
-                            `${window.location.origin}/api/slack/callback`,
-                        },
-                        ...(slackSharedRedirectUri &&
-                        slackSharedRedirectUri !== slackDevRedirectUri
-                          ? [{ label: 'Alternate URL', value: slackSharedRedirectUri }]
-                          : []),
-                      ].map((item) => (
-                        <div key={item.value} className="space-y-0.5">
-                          <div className="text-[10.5px] text-zinc-500">{item.label}</div>
-                          <div className="flex items-center gap-1.5">
-                            <div className="flex-1 font-mono text-[11px] bg-white border border-zinc-200 rounded px-2 py-1 text-zinc-800 break-all select-all">
-                              {item.value}
+            {showSlackSetup && (() => {
+              const activeOriginCallback = `${window.location.origin}/api/slack/callback`;
+              const primaryRedirectUri =
+                (slackRedirectUri && !slackRedirectUri.includes('localhost')
+                  ? slackRedirectUri
+                  : null) ||
+                (!activeOriginCallback.includes('localhost') ? activeOriginCallback : null) ||
+                slackRedirectUri ||
+                slackDevRedirectUri ||
+                activeOriginCallback;
+              const secondaryUrls = [slackDevRedirectUri, slackSharedRedirectUri].filter(
+                (u): u is string =>
+                  typeof u === 'string' &&
+                  u.length > 0 &&
+                  u !== primaryRedirectUri &&
+                  !u.includes('localhost')
+              );
+              const redirectItems = [
+                { label: 'Redirect URL (add this in Slack)', value: primaryRedirectUri },
+                ...secondaryUrls.map((u, idx) => ({
+                  label: idx === 0 ? 'Shared Preview URL (optional)' : 'Alternate URL (optional)',
+                  value: u,
+                })),
+              ];
+
+              return (
+                <div className="p-3.5 bg-zinc-50 border border-zinc-200 rounded-md text-[11.5px] text-zinc-600 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-zinc-900">How to Set Up Slack</span>
+                    {slackHasClientId && slackHasClientSecret && (
+                      <span className="text-[11px] font-medium text-emerald-700">
+                        Credentials configured
+                      </span>
+                    )}
+                  </div>
+                  <ol className="list-decimal pl-4 space-y-2 leading-relaxed">
+                    <li>
+                      Open your app at{' '}
+                      <a
+                        href="https://api.slack.com/apps"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-blue-600 hover:underline font-medium"
+                      >
+                        api.slack.com/apps
+                      </a>{' '}
+                      (or create one <strong>From scratch</strong>).{' '}
+                      <span className="text-zinc-500">
+                        Ignore Slack&apos;s &ldquo;Build with AI / bolt-blank-template&rdquo; prompt — Meridian already includes the Slack integration.
+                      </span>
+                    </li>
+                    <li>
+                      In the left sidebar open <strong>OAuth &amp; Permissions</strong>, add User Token Scopes{' '}
+                      <code className="font-mono text-zinc-800">channels:read, channels:history, groups:read, groups:history</code>, and register this Redirect URL:
+                      <div className="mt-1.5 space-y-1.5">
+                        {redirectItems.map((item) => (
+                          <div key={item.value} className="space-y-0.5">
+                            <div className="text-[10.5px] text-zinc-500">{item.label}</div>
+                            <div className="flex items-center gap-1.5">
+                              <div className="flex-1 font-mono text-[11px] bg-white border border-zinc-200 rounded px-2 py-1 text-zinc-800 break-all select-all">
+                                {item.value}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => copyText(item.value)}
+                                title="Copy callback URL"
+                                className="p-1.5 bg-white border border-zinc-200 hover:bg-zinc-100 rounded text-zinc-600 cursor-pointer shrink-0"
+                              >
+                                {copiedUrl === item.value ? (
+                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => copyText(item.value)}
-                              title="Copy callback URL"
-                              className="p-1.5 bg-white border border-zinc-200 hover:bg-zinc-100 rounded text-zinc-600 cursor-pointer shrink-0"
-                            >
-                              {copiedUrl === item.value ? (
-                                <Check className="w-3.5 h-3.5 text-emerald-600" />
-                              ) : (
-                                <Copy className="w-3.5 h-3.5" />
-                              )}
-                            </button>
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  </li>
-                  <li>
-                    Copy your <strong>Client ID</strong> and <strong>Client Secret</strong> from <strong>Basic Information</strong> into your environment variables (<code className="font-mono text-zinc-800">SLACK_CLIENT_ID</code> &amp; <code className="font-mono text-zinc-800">SLACK_CLIENT_SECRET</code>), redeploy, then click <strong>Connect Slack</strong>.
-                  </li>
-                </ol>
-              </div>
-            )}
+                        ))}
+                      </div>
+                    </li>
+                    <li>
+                      Open <strong>Basic Information → App Credentials</strong> in Slack, copy your <strong>Client ID</strong> and <strong>Client Secret</strong>, and add them as server secrets (never pasted into the app page):
+                      <ul className="list-disc pl-4 mt-1 space-y-0.5 text-zinc-600">
+                        <li>
+                          <strong>In AI Studio:</strong> open <strong>Settings (gear icon) → Secrets</strong> and add{' '}
+                          <code className="font-mono text-zinc-800">SLACK_CLIENT_ID</code> and{' '}
+                          <code className="font-mono text-zinc-800">SLACK_CLIENT_SECRET</code>.
+                        </li>
+                        <li>
+                          <strong>If deployed on Render / cloud host:</strong> open your service&apos;s{' '}
+                          <strong>Environment → Environment Variables</strong> tab, add both keys, and redeploy.
+                        </li>
+                      </ul>
+                    </li>
+                    <li>
+                      Return here and click <strong>Connect Slack</strong> to authorize your workspace.
+                    </li>
+                  </ol>
+                </div>
+              );
+            })()}
           </div>
 
           <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-zinc-100">

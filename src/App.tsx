@@ -31,6 +31,7 @@ import {
   createRuleInCloud,
   createSourceInCloud,
   createTargetCompaniesBatchInCloud,
+  deleteCoverLetterSampleInCloud,
   deleteEventInCloud,
   deleteFeedbackInCloud,
   deleteJobInCloud,
@@ -42,6 +43,7 @@ import {
   loadUserWorkspace,
   saveUserProfileToCloud,
   updateCareerContextInCloud,
+  updateJobAttributesInCloud,
   updateJobFullDescriptionInCloud,
   updateJobNetworkingContactsInCloud,
   updateJobNotesInCloud,
@@ -54,6 +56,7 @@ import {
   updateTargetCompanyInCloud,
   updateTargetCompanyMetricsInCloud,
   updateWorkspaceSettingsInCloud,
+  upsertCoverLetterSampleInCloud,
   upsertRoleResumeInCloud,
 } from './lib/firestoreStore';
 import type { ParsedTargetCompanyRow } from './lib/csvParser';
@@ -70,12 +73,15 @@ import {
   compileIntakeToSearchPrompt,
   createDefaultIntakeProfile,
 } from './lib/intakeHelpers';
+import { detectIsMbaRole, normalizeEmploymentType } from './lib/resumeClient';
 import {
   AgentRunReport,
   AiRuleSuggestion,
   CareerExperienceItem,
+  CoverLetterSample,
   DislikeReason,
   FeedbackEntry,
+  GeneratedCoverLetter,
   ImportBatchRecord,
   JobEnrichmentPatch,
   JobEvent,
@@ -144,11 +150,22 @@ function normalizeFeedbackList(entries: FeedbackEntry[]): FeedbackEntry[] {
 }
 
 function normalizeJobDislikeReasons(jobList: JobRecord[]): JobRecord[] {
-  return jobList.map((job) =>
-    job.dislikeReason !== undefined
-      ? { ...job, dislikeReason: normalizeDislikeReason(job.dislikeReason) }
-      : job
-  );
+  return jobList.map((job) => ({
+    ...job,
+    dislikeReason:
+      job.dislikeReason !== undefined
+        ? normalizeDislikeReason(job.dislikeReason)
+        : undefined,
+    employmentType: normalizeEmploymentType(
+      job.employmentType,
+      job.title,
+      job.summary
+    ),
+    isMbaRole:
+      typeof job.isMbaRole === 'boolean'
+        ? job.isMbaRole
+        : detectIsMbaRole(job.title),
+  }));
 }
 
 const VALID_STAGES: PipelineStage[] = [
@@ -171,36 +188,61 @@ function isUntitledJob(job: JobRecord): boolean {
   );
 }
 
+function isMissingOrPlaceholderUrl(url: string | undefined): boolean {
+  const u = (url || '').trim();
+  if (!u || !/^https?:\/\//i.test(u)) return true;
+  return /\.example\b|mail\.google\.com|slack\.com\/archives|web\.whatsapp\.com/i.test(u);
+}
+
 function getIncompleteJobsForEnrichment(jobList: JobRecord[]) {
-  return jobList
-    .filter((j) => {
-      if (j.stage === 'archived') return false;
+  const candidates = jobList
+    .filter((j) => j.stage !== 'archived')
+    .map((j) => {
       const t = (j.title || '').trim().toLowerCase();
       const s = (j.salaryLabel || '').trim().toLowerCase();
       const loc = (j.location || '').trim().toLowerCase();
       const desc = (j.fullDescription || '').trim();
       const sum = (j.summary || '').trim();
       const missingTitle = !t || t === 'untitled role' || t === 'untitled';
-      const missingSalary = !s || s === 'not listed' || s === 'unspecified' || s === 'n/a';
+      const missingSalary =
+        !s || s === 'not listed' || s === 'unspecified' || s === 'n/a';
       const missingLocation = !loc || loc === 'unspecified' || loc === 'n/a';
-      const missingDesc = desc.length < 180;
+      const missingUrl = isMissingOrPlaceholderUrl(j.jobUrl);
+      const missingEmploymentType = !j.employmentType;
+      const missingDesc = desc.length < 300;
       const missingSummary = sum.length < 40;
-      return missingTitle || missingSalary || missingLocation || missingDesc || missingSummary;
+      const needsEnrichment =
+        missingTitle ||
+        missingSalary ||
+        missingLocation ||
+        missingUrl ||
+        missingEmploymentType ||
+        missingDesc ||
+        missingSummary;
+      const priority =
+        (missingUrl ? 4 : 0) +
+        (missingDesc ? 3 : 0) +
+        (missingTitle ? 2 : 0) +
+        (missingSalary ? 1 : 0) +
+        (missingLocation ? 1 : 0);
+      return { job: j, needsEnrichment, priority };
     })
-    .slice(0, 15)
-    .map((j) => ({
-      id: j.id,
-      title: j.title,
-      company: j.company,
-      salaryLabel: j.salaryLabel,
-      location: j.location,
-      locationType: j.locationType,
-      employmentType: j.employmentType,
-      jobUrl: j.jobUrl,
-      summary: j.summary,
-      fullDescription: j.fullDescription,
-      skills: j.skills,
-    }));
+    .filter((entry) => entry.needsEnrichment)
+    .sort((a, b) => b.priority - a.priority);
+
+  return candidates.slice(0, 15).map(({ job: j }) => ({
+    id: j.id,
+    title: j.title,
+    company: j.company,
+    salaryLabel: j.salaryLabel,
+    location: j.location,
+    locationType: j.locationType,
+    employmentType: j.employmentType,
+    jobUrl: j.jobUrl,
+    summary: j.summary,
+    fullDescription: j.fullDescription,
+    skills: j.skills,
+  }));
 }
 
 function loadChatHistory(): ChatMessage[] {
@@ -257,6 +299,7 @@ interface PersistedState {
   runHistory: AgentRunReport[];
   importHistory: ImportBatchRecord[];
   resumes: RoleResume[];
+  coverLetterSamples: CoverLetterSample[];
   autoScheduleEnabled: boolean;
   autoScheduleMinutes: number;
   aiSynthesis: PreferenceSynthesisResult | null;
@@ -337,6 +380,9 @@ function loadInitialState(): PersistedState {
             ? parsed.importHistory
             : [],
           resumes: Array.isArray(parsed.resumes) ? parsed.resumes : [],
+          coverLetterSamples: Array.isArray(parsed.coverLetterSamples)
+            ? parsed.coverLetterSamples
+            : [],
           autoScheduleEnabled: Boolean(parsed.autoScheduleEnabled),
           autoScheduleMinutes:
             typeof parsed.autoScheduleMinutes === 'number'
@@ -363,7 +409,7 @@ function loadInitialState(): PersistedState {
   }
 
   return {
-    jobs: INITIAL_JOBS,
+    jobs: normalizeJobDislikeReasons(INITIAL_JOBS),
     sources: INITIAL_SOURCES,
     targetCompanies: [],
     events: INITIAL_EVENTS,
@@ -375,6 +421,7 @@ function loadInitialState(): PersistedState {
     runHistory: [],
     importHistory: [],
     resumes: [],
+    coverLetterSamples: [],
     autoScheduleEnabled: false,
     autoScheduleMinutes: 240,
     aiSynthesis: null,
@@ -418,11 +465,24 @@ export default function App() {
     initial.importHistory
   );
   const [resumes, setResumes] = useState<RoleResume[]>(initial.resumes);
+  const [coverLetterSamples, setCoverLetterSamples] = useState<CoverLetterSample[]>(
+    initial.coverLetterSamples
+  );
   const [tailoredByJobId, setTailoredByJobId] = useState<
     Record<
       string,
       {
         tailored: TailoredResumeDocument;
+        docxBase64: string;
+        fileName: string;
+      }
+    >
+  >({});
+  const [coverLetterByJobId, setCoverLetterByJobId] = useState<
+    Record<
+      string,
+      {
+        coverLetter: GeneratedCoverLetter;
         docxBase64: string;
         fileName: string;
       }
@@ -442,11 +502,16 @@ export default function App() {
     setIntakeOpen(true);
   }, []);
   const [importModalOpen, setImportModalOpen] = useState(false);
-  const [importModalMode, setImportModalMode] = useState<'roles' | 'companies'>('roles');
-  const openImportModal = useCallback((mode: 'roles' | 'companies' = 'roles') => {
-    setImportModalMode(mode);
-    setImportModalOpen(true);
-  }, []);
+  const [importModalMode, setImportModalMode] = useState<
+    'url' | 'roles' | 'companies'
+  >('roles');
+  const openImportModal = useCallback(
+    (mode: 'url' | 'roles' | 'companies' = 'roles') => {
+      setImportModalMode(mode);
+      setImportModalOpen(true);
+    },
+    []
+  );
   const [importedCountInSession, setImportedCountInSession] = useState(0);
 
   // Firebase Auth account state
@@ -623,6 +688,9 @@ export default function App() {
               if (cloud.events.length > 0) setEvents(cloud.events);
               if (cloud.imports.length > 0) setImportHistory(cloud.imports);
               if (cloud.resumes.length > 0) setResumes(cloud.resumes);
+              if (cloud.coverLetterSamples.length > 0) {
+                setCoverLetterSamples(cloud.coverLetterSamples);
+              }
               setAutoScheduleEnabled(cloud.autoScheduleEnabled);
               setAutoScheduleMinutes(cloud.autoScheduleMinutes);
               if (cloud.profile.onboardingCompleted) {
@@ -678,6 +746,7 @@ export default function App() {
         runHistory,
         importHistory,
         resumes,
+        coverLetterSamples,
         autoScheduleEnabled,
         autoScheduleMinutes,
         aiSynthesis,
@@ -702,6 +771,7 @@ export default function App() {
     runHistory,
     importHistory,
     resumes,
+    coverLetterSamples,
     autoScheduleEnabled,
     autoScheduleMinutes,
     aiSynthesis,
@@ -756,17 +826,37 @@ export default function App() {
                     location: p.location ?? j.location,
                     locationType: p.locationType ?? j.locationType,
                     employmentType: p.employmentType ?? j.employmentType,
+                    isMbaRole:
+                      typeof p.isMbaRole === 'boolean'
+                        ? p.isMbaRole
+                        : p.title
+                        ? detectIsMbaRole(p.title)
+                        : j.isMbaRole,
                     skills: p.skills && p.skills.length > 0 ? p.skills : j.skills,
                     summary: p.summary ?? j.summary,
                     fullDescription: p.fullDescription ?? j.fullDescription,
                     jobUrl: p.jobUrl ?? j.jobUrl,
+                    companyDomain: p.companyDomain ?? j.companyDomain,
                   };
                 })
               : prev;
 
           if (addedJobs.length > 0) {
             const existing = new Set(updatedPrev.map((j) => j.urlHash));
-            const uniqueNew = addedJobs.filter((j) => !existing.has(j.urlHash));
+            const uniqueNew = addedJobs
+              .filter((j) => !existing.has(j.urlHash))
+              .map((j) => ({
+                ...j,
+                employmentType: normalizeEmploymentType(
+                  j.employmentType,
+                  j.title,
+                  j.summary
+                ),
+                isMbaRole:
+                  typeof j.isMbaRole === 'boolean'
+                    ? j.isMbaRole
+                    : detectIsMbaRole(j.title),
+              }));
             if (uniqueNew.length > 0) {
               persistCloud((uid) => createJobsInCloud(uid, uniqueNew));
               return [...uniqueNew, ...updatedPrev];
@@ -1461,32 +1551,96 @@ export default function App() {
   };
 
   const handleFetchFullDescription = async (jobId: string, jobUrl: string) => {
+    const targetJob = jobs.find((j) => j.id === jobId);
     try {
       const res = await fetch('/api/jobs/fetch-description', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jobUrl }),
+        body: JSON.stringify({
+          jobUrl: jobUrl || targetJob?.jobUrl || '',
+          title: targetJob?.title,
+          company: targetJob?.company,
+          location: targetJob?.location,
+        }),
       });
-      const data = (await res.json()) as { fullDescription?: string; error?: string };
+      const data = (await res.json()) as {
+        fullDescription?: string;
+        discoveredJobUrl?: string;
+        employmentType?: string;
+        error?: string;
+      };
       if (!res.ok || !data.fullDescription) {
         throw new Error(
-          data.error || 'Could not extract full description from this posting URL.'
+          data.error || 'Could not extract full description from the web.'
         );
       }
+
+      const needsUrlUpdate =
+        Boolean(data.discoveredJobUrl) &&
+        isMissingOrPlaceholderUrl(targetJob?.jobUrl);
+      let nextDomain: string | undefined;
+      if (needsUrlUpdate && data.discoveredJobUrl) {
+        try {
+          nextDomain = new URL(data.discoveredJobUrl).hostname.replace(/^www\./, '');
+        } catch {
+          // Ignore malformed host
+        }
+      }
+      const nextEmploymentType =
+        data.employmentType && !targetJob?.employmentType
+          ? data.employmentType
+          : undefined;
+
       setJobs((prev) =>
         prev.map((j) =>
-          j.id === jobId ? { ...j, fullDescription: data.fullDescription } : j
+          j.id === jobId
+            ? {
+                ...j,
+                fullDescription: data.fullDescription,
+                ...(needsUrlUpdate && data.discoveredJobUrl
+                  ? {
+                      jobUrl: data.discoveredJobUrl,
+                      ...(nextDomain ? { companyDomain: nextDomain } : {}),
+                    }
+                  : {}),
+                ...(nextEmploymentType
+                  ? { employmentType: nextEmploymentType }
+                  : {}),
+              }
+            : j
         )
       );
       persistCloud((uid) =>
-        updateJobFullDescriptionInCloud(uid, jobId, data.fullDescription!)
+        updateJobFullDescriptionInCloud(uid, jobId, data.fullDescription!, {
+          ...(needsUrlUpdate && data.discoveredJobUrl
+            ? {
+                jobUrl: data.discoveredJobUrl,
+                ...(nextDomain ? { companyDomain: nextDomain } : {}),
+              }
+            : {}),
+          ...(nextEmploymentType ? { employmentType: nextEmploymentType } : {}),
+        })
       );
-      pushToast('Fetched full job description');
+      pushToast(
+        needsUrlUpdate
+          ? 'Pulled full job description and discovered official posting URL'
+          : 'Pulled full job description from the web'
+      );
     } catch (err: unknown) {
       pushToast(
         err instanceof Error ? err.message : 'Failed to fetch full job description.'
       );
     }
+  };
+
+  const handleUpdateJobAttributes = (
+    jobId: string,
+    patch: { employmentType?: string; isMbaRole?: boolean }
+  ) => {
+    setJobs((prev) =>
+      prev.map((j) => (j.id === jobId ? { ...j, ...patch } : j))
+    );
+    persistCloud((uid) => updateJobAttributesInCloud(uid, jobId, patch));
   };
 
   const handleUpdateNetworkingContacts = (
@@ -1499,7 +1653,7 @@ export default function App() {
     persistCloud((uid) => updateJobNetworkingContactsInCloud(uid, jobId, contacts));
   };
 
-  // Resumes & Extended Career Context handlers
+  // Resumes, Cover Letter Samples & Extended Career Context handlers
   const handleSaveResume = (resume: RoleResume) => {
     setResumes((prev) => {
       const idx = prev.findIndex(
@@ -1523,6 +1677,31 @@ export default function App() {
     setResumes((prev) => prev.filter((r) => r.id !== resumeId));
     persistCloud((uid) => deleteRoleResumeInCloud(uid, resumeId));
     pushToast('Removed base resume');
+  };
+
+  const handleSaveCoverLetterSample = (sample: CoverLetterSample) => {
+    setCoverLetterSamples((prev) => {
+      const idx = prev.findIndex(
+        (s) =>
+          s.id === sample.id ||
+          s.roleType.toLowerCase() === sample.roleType.toLowerCase()
+      );
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = { ...sample, id: prev[idx].id };
+        persistCloud((uid) => upsertCoverLetterSampleInCloud(uid, next[idx]));
+        return next;
+      }
+      persistCloud((uid) => upsertCoverLetterSampleInCloud(uid, sample));
+      return [sample, ...prev];
+    });
+    pushToast(`Saved ${sample.roleType} cover letter sample (${sample.fileName})`);
+  };
+
+  const handleDeleteCoverLetterSample = (sampleId: string) => {
+    setCoverLetterSamples((prev) => prev.filter((s) => s.id !== sampleId));
+    persistCloud((uid) => deleteCoverLetterSampleInCloud(uid, sampleId));
+    pushToast('Removed cover letter sample');
   };
 
   const handleSaveCareerExperiences = (items: CareerExperienceItem[]) => {
@@ -1550,6 +1729,65 @@ export default function App() {
   ) => {
     setTailoredByJobId((prev) => ({ ...prev, [jobId]: result }));
     pushToast('Generated 1-page tailored resume (.docx with edits in red)');
+  };
+
+  const handleSaveCoverLetterResult = (
+    jobId: string,
+    result: {
+      coverLetter: GeneratedCoverLetter;
+      docxBase64: string;
+      fileName: string;
+    }
+  ) => {
+    setCoverLetterByJobId((prev) => ({ ...prev, [jobId]: result }));
+    pushToast('Generated tailored cover letter (.docx)');
+  };
+
+  const handleAddRoleByUrl = async (jobUrl: string, stage: PipelineStage) => {
+    const res = await fetch('/api/jobs/from-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jobUrl,
+        searchPrompt,
+        rules: rules.map((r) => ({ text: r.text, active: r.active })),
+        recentFeedback: buildRichFeedback(),
+        stage,
+      }),
+    });
+    const data = (await res.json()) as { job?: JobRecord; error?: string };
+    if (!res.ok || !data.job) {
+      throw new Error(
+        data.error || 'Could not extract job details from that URL.'
+      );
+    }
+
+    const normalizedJob: JobRecord = {
+      ...data.job,
+      employmentType: normalizeEmploymentType(
+        data.job.employmentType,
+        data.job.title,
+        data.job.summary
+      ),
+      isMbaRole:
+        typeof data.job.isMbaRole === 'boolean'
+          ? data.job.isMbaRole
+          : detectIsMbaRole(data.job.title),
+    };
+
+    const existing = jobs.find((j) => j.urlHash === normalizedJob.urlHash);
+    if (existing) {
+      setSelectedJobId(existing.id);
+      pushToast(`"${existing.title}" at ${existing.company} is already in your pipeline`);
+      return;
+    }
+
+    setJobs((prev) => [normalizedJob, ...prev]);
+    persistCloud((uid) => createJobsInCloud(uid, [normalizedJob]));
+    setSelectedJobId(normalizedJob.id);
+    pushToast(
+      `Added "${normalizedJob.title}" at ${normalizedJob.company} (${normalizedJob.matchScore}% match)`
+    );
   };
 
   // Account & Gmail Auth handlers
@@ -1619,10 +1857,14 @@ export default function App() {
           error?: string;
         };
 
-        if (res.status === 401) {
+        if (res.status === 401 || res.status === 403) {
           clearGmailAccessToken();
           setGmailConnected(false);
-          throw new Error(data.error || 'Gmail session expired. Please sign in again.');
+          const msg =
+            data.error ||
+            'Gmail read permission was not granted. Click Connect Gmail and check the "View your email messages" box.';
+          setGmailError(msg);
+          throw new Error(msg);
         }
 
         if (!res.ok) {
@@ -1821,7 +2063,11 @@ export default function App() {
   useEffect(() => {
     const handleOAuthMessage = (event: MessageEvent) => {
       const origin = event.origin;
-      if (!origin.endsWith('.run.app') && !origin.includes('localhost')) {
+      if (
+        origin !== window.location.origin &&
+        !origin.endsWith('.run.app') &&
+        !origin.includes('localhost')
+      ) {
         return;
       }
       if (event.data?.type === 'SLACK_OAUTH_SUCCESS' && event.data?.accessToken) {
@@ -2510,11 +2756,12 @@ export default function App() {
         cloudProfileExistsRef.current = true;
 
         if (wasNewProfile) {
-          // Seed initial sources, target companies, rules, uploaded resumes, and jobs into user's cloud DB
+          // Seed initial sources, target companies, rules, uploaded resumes, cover letter samples, and jobs into user's cloud DB
           await Promise.all([
             ...nextSources.map((s) => createSourceInCloud(uid, s)),
             ...rules.map((r) => createRuleInCloud(uid, r)),
             ...resumes.map((r) => upsertRoleResumeInCloud(uid, r)),
+            ...coverLetterSamples.map((s) => upsertCoverLetterSampleInCloud(uid, s)),
             createTargetCompaniesBatchInCloud(uid, targetCompanies),
             createJobsInCloud(uid, jobs),
           ]);
@@ -2522,6 +2769,7 @@ export default function App() {
           await Promise.all([
             ...nextSources.map((s) => createSourceInCloud(uid, s)),
             ...resumes.map((r) => upsertRoleResumeInCloud(uid, r)),
+            ...coverLetterSamples.map((s) => upsertCoverLetterSampleInCloud(uid, s)),
             createTargetCompaniesBatchInCloud(uid, targetCompanies),
           ]);
         }
@@ -2985,6 +3233,10 @@ export default function App() {
               onThumbsDown={handleThumbsDown}
               onRestoreJob={handleRestoreJob}
               onDeleteJob={handleDeleteJob}
+              onToggleMbaRole={(jobId, isMbaRole) =>
+                handleUpdateJobAttributes(jobId, { isMbaRole })
+              }
+              onOpenAddByUrl={() => openImportModal('url')}
               onMoveUntitledToTargetCompanies={handleMoveUntitledToTargetCompanies}
               onRunAgent={handleRunAgent}
               onRescoreActiveJobs={handleRescoreActiveJobs}
@@ -3083,10 +3335,13 @@ export default function App() {
             <ResumesView
               roleTypesFromIntake={intakeProfile.roleTypes}
               resumes={resumes}
+              coverLetterSamples={coverLetterSamples}
               careerExperiences={intakeProfile.careerExperiences ?? []}
               careerContextNotes={intakeProfile.careerContextNotes ?? ''}
               onSaveResume={handleSaveResume}
               onDeleteResume={handleDeleteResume}
+              onSaveCoverLetterSample={handleSaveCoverLetterSample}
+              onDeleteCoverLetterSample={handleDeleteCoverLetterSample}
               onSaveCareerExperiences={handleSaveCareerExperiences}
               onSaveCareerContextNotes={handleSaveCareerContextNotes}
             />
@@ -3171,12 +3426,13 @@ export default function App() {
         onCompleteIntake={handleCompleteIntake}
       />
 
-      {/* CSV / JSON Upload & Column Mapper Modal */}
+      {/* CSV / JSON Upload & URL Role Import Modal */}
       <ImportRolesModal
         open={importModalOpen}
         initialMode={importModalMode}
         existingHashes={jobs.map((j) => j.urlHash)}
         onClose={() => setImportModalOpen(false)}
+        onAddJobByUrl={handleAddRoleByUrl}
         onImportJobs={handleImportJobs}
         onImportTargetCompanies={handleImportTargetCompanies}
       />
@@ -3186,12 +3442,20 @@ export default function App() {
         job={selectedJob}
         events={events}
         resumes={resumes}
+        targetRoleTypes={intakeProfile.roleTypes}
+        coverLetterSamples={coverLetterSamples}
         careerExperiences={intakeProfile.careerExperiences ?? []}
         careerContextNotes={intakeProfile.careerContextNotes ?? ''}
         tailoredResult={selectedJob ? tailoredByJobId[selectedJob.id] ?? null : null}
+        coverLetterResult={
+          selectedJob ? coverLetterByJobId[selectedJob.id] ?? null : null
+        }
         onSaveResume={handleSaveResume}
+        onSaveCoverLetterSample={handleSaveCoverLetterSample}
         onOpenResumesView={() => setActiveView('resumes')}
         onSaveTailoredResult={handleSaveTailoredResult}
+        onSaveCoverLetterResult={handleSaveCoverLetterResult}
+        onUpdateJobAttributes={handleUpdateJobAttributes}
         onClose={() => setSelectedJobId(null)}
         onMoveStage={handleMoveStage}
         onUpdateNotes={handleUpdateNotes}

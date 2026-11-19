@@ -8,6 +8,8 @@ export type PipelineStage =
 
 export type LocationType = 'Remote' | 'Hybrid' | 'Onsite';
 
+export type EmploymentType = 'Full-time' | 'Internship' | 'Part-time' | 'Contract';
+
 export type AtsType =
   | 'Greenhouse'
   | 'Lever'
@@ -42,6 +44,28 @@ export interface RoleResume {
   fileName: string;
   rawText: string;
   uploadedAt: string; // YYYY-MM-DD
+}
+
+export interface CoverLetterSample {
+  id: string;
+  roleType: string;
+  fileName: string;
+  rawText: string;
+  uploadedAt: string; // YYYY-MM-DD
+}
+
+export interface GeneratedCoverLetter {
+  roleTypeUsed: string;
+  sampleFileName: string;
+  candidateName: string;
+  contactLine: string;
+  dateLine: string;
+  recipientLine: string;
+  salutation: string;
+  paragraphs: string[];
+  signOff: string;
+  tailoringNotes: string[];
+  generatedAt: string;
 }
 
 export interface CareerExperienceItem {
@@ -168,6 +192,7 @@ export interface JobRecord {
   location: string;
   locationType: LocationType;
   employmentType?: string;
+  isMbaRole?: boolean;
   sourceId: string;
   sourceName: string;
   atsType: AtsType;
@@ -216,6 +241,7 @@ export interface JobEnrichmentPatch {
   location?: string;
   locationType?: LocationType;
   employmentType?: string;
+  isMbaRole?: boolean;
   jobUrl?: string;
   skills?: string[];
   summary?: string;

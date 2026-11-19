@@ -6,9 +6,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer as createViteServer } from 'vite';
 import {
+  extractJobFromUrl,
   fetchFullJobDescriptionFromUrl,
   type IncompleteJobCandidate,
 } from './src/lib/agentRunner.ts';
+import {
+  buildCoverLetterDocxBuffer,
+  generateCoverLetterForJob,
+} from './src/lib/coverLetterGenerator.ts';
 import {
   rescoreJobsWithFeedback,
   synthesizePreferencesWithGemini,
@@ -32,6 +37,7 @@ import { scanWhatsAppMessages } from './src/lib/whatsappScanner.ts';
 import type { WorkspaceChatContext } from './src/types/chat.ts';
 import type {
   CareerExperienceItem,
+  CoverLetterSample,
   DislikeReason,
   JobRecord,
   JobSource,
@@ -418,9 +424,22 @@ async function startServer() {
     }
   };
 
-  const getSlackCallbackUris = (requestedOrigin?: string) => {
+  const getSlackCallbackUris = (
+    requestedOrigin?: string,
+    req?: express.Request
+  ) => {
     const envBase = (process.env.APP_URL || '').trim().replace(/\/$/, '');
-    const devBase = envBase || 'http://localhost:3000';
+    const forwardedProto =
+      typeof req?.headers['x-forwarded-proto'] === 'string'
+        ? req.headers['x-forwarded-proto'].split(',')[0].trim()
+        : req?.protocol || 'https';
+    const reqHost = req?.get('host')?.trim() || '';
+    const inferredRequestBase =
+      reqHost && !/^localhost(?::\d+)?$/i.test(reqHost) && !/^127\.0\.0\.1(?::\d+)?$/i.test(reqHost)
+        ? `${forwardedProto}://${reqHost}`.replace(/\/$/, '')
+        : '';
+
+    const devBase = envBase || inferredRequestBase || 'http://localhost:3000';
     const sharedBase = envBase.includes('ais-dev-')
       ? envBase.replace('ais-dev-', 'ais-pre-')
       : envBase;
@@ -431,23 +450,26 @@ async function startServer() {
         const u = new URL(requestedOrigin);
         const normalized = u.origin.replace(/\/$/, '');
         if (
+          u.protocol === 'https:' ||
           normalized === envBase ||
           normalized === sharedBase ||
-          u.hostname.endsWith('.run.app') ||
           u.hostname === 'localhost' ||
           u.hostname === '127.0.0.1'
         ) {
           activeBase = normalized;
         }
       } catch {
-        // Ignore invalid origin query param and keep APP_URL
+        // Ignore invalid origin query param and keep devBase
       }
     }
 
     return {
       redirectUri: `${activeBase}/api/slack/callback`,
       devRedirectUri: `${devBase}/api/slack/callback`,
-      sharedRedirectUri: sharedBase ? `${sharedBase}/api/slack/callback` : null,
+      sharedRedirectUri:
+        sharedBase && sharedBase !== activeBase
+          ? `${sharedBase}/api/slack/callback`
+          : null,
     };
   };
 
@@ -457,7 +479,7 @@ async function startServer() {
     const requestedOrigin =
       typeof req.query.origin === 'string' ? req.query.origin : undefined;
     const { redirectUri, devRedirectUri, sharedRedirectUri } =
-      getSlackCallbackUris(requestedOrigin);
+      getSlackCallbackUris(requestedOrigin, req);
     const state = crypto.randomBytes(20).toString('hex');
     const result = buildSlackAuthUrl(redirectUri, state);
 
@@ -612,7 +634,8 @@ async function startServer() {
     }
 
     try {
-      const redirectUri = pending?.redirectUri || getSlackCallbackUris().redirectUri;
+      const redirectUri =
+        pending?.redirectUri || getSlackCallbackUris(undefined, req).redirectUri;
       const exchanged = await exchangeSlackCode(code, redirectUri);
 
       if (state) {
@@ -855,21 +878,161 @@ async function startServer() {
     }
   });
 
-  // On-demand Full Job Description fetcher for public job posting URLs
+  // On-demand Full Job Description fetcher for public job posting URLs (with live web search fallback)
   app.post('/api/jobs/fetch-description', async (req, res) => {
     try {
-      const { jobUrl } = req.body as { jobUrl?: string };
-      if (!jobUrl || typeof jobUrl !== 'string' || !jobUrl.trim()) {
-        res.status(400).json({ error: 'Job posting URL is required.' });
+      const { jobUrl, title, company, location } = req.body as {
+        jobUrl?: string;
+        title?: string;
+        company?: string;
+        location?: string;
+      };
+      if (
+        (!jobUrl || !jobUrl.trim()) &&
+        (!title || !title.trim()) &&
+        (!company || !company.trim())
+      ) {
+        res
+          .status(400)
+          .json({ error: 'A job posting URL or role title and company is required.' });
         return;
       }
-      const fullDescription = await fetchFullJobDescriptionFromUrl(jobUrl.trim());
-      res.json({ fullDescription });
+      const result = await fetchFullJobDescriptionFromUrl(jobUrl?.trim(), {
+        title: title?.trim(),
+        company: company?.trim(),
+        location: location?.trim(),
+      });
+      res.json(result);
     } catch (error: unknown) {
       console.error('Error in POST /api/jobs/fetch-description:', error);
       const errObj = error as { message?: string };
       res.status(500).json({
-        error: errObj?.message || 'Could not fetch full job description from URL.',
+        error: errObj?.message || 'Could not fetch full job description from the web.',
+      });
+    }
+  });
+
+  // Manually add a single role by entering its job posting URL
+  app.post('/api/jobs/from-url', async (req, res) => {
+    try {
+      const { jobUrl, searchPrompt, rules, recentFeedback, stage } = req.body as {
+        jobUrl?: string;
+        searchPrompt?: string;
+        rules?: { text: string; active: boolean }[];
+        recentFeedback?: {
+          jobTitle: string;
+          company: string;
+          vote: 'up' | 'down';
+          reason?: DislikeReason;
+        }[];
+        stage?: JobRecord['stage'];
+      };
+
+      if (!jobUrl || !jobUrl.trim()) {
+        res.status(400).json({ error: 'A job posting URL is required.' });
+        return;
+      }
+
+      const job = await extractJobFromUrl({
+        jobUrl: jobUrl.trim(),
+        searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
+        rules: Array.isArray(rules) ? rules : [],
+        recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
+        stage,
+      });
+
+      res.json({ job });
+    } catch (error: unknown) {
+      console.error('Error in POST /api/jobs/from-url:', error);
+      const errObj = error as { status?: number; message?: string };
+      const statusCode =
+        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
+          ? errObj.status
+          : 500;
+      res.status(statusCode).json({
+        error:
+          errObj?.message ||
+          'Could not extract job details from that URL. Verify it is a public posting link.',
+      });
+    }
+  });
+
+  // Generate tailored cover letter matching the user's uploaded role-specific sample + .docx export
+  app.post('/api/cover-letters/generate', async (req, res) => {
+    try {
+      const {
+        job,
+        sample,
+        baseResume,
+        careerExperiences,
+        careerContextNotes,
+        customInstructions,
+      } = req.body as {
+        job?: Pick<
+          JobRecord,
+          | 'title'
+          | 'company'
+          | 'location'
+          | 'locationType'
+          | 'employmentType'
+          | 'isMbaRole'
+          | 'skills'
+          | 'summary'
+          | 'fullDescription'
+          | 'notes'
+        >;
+        sample?: CoverLetterSample;
+        baseResume?: RoleResume | null;
+        careerExperiences?: CareerExperienceItem[];
+        careerContextNotes?: string;
+        customInstructions?: string;
+      };
+
+      if (!job || !sample || !sample.rawText?.trim()) {
+        res.status(400).json({
+          error: 'Both a target job and an uploaded cover letter sample are required.',
+        });
+        return;
+      }
+
+      const coverLetter = await generateCoverLetterForJob({
+        job,
+        sample,
+        baseResume: baseResume ?? null,
+        careerExperiences: Array.isArray(careerExperiences) ? careerExperiences : [],
+        careerContextNotes:
+          typeof careerContextNotes === 'string' ? careerContextNotes : '',
+        customInstructions:
+          typeof customInstructions === 'string' ? customInstructions : undefined,
+      });
+
+      const docxBuffer = await buildCoverLetterDocxBuffer(coverLetter);
+      const safeName = coverLetter.candidateName
+        .replace(/[^a-zA-Z0-9]+/g, '_')
+        .replace(/^_|_$/g, '');
+      const safeCompany = job.company
+        .replace(/[^a-zA-Z0-9]+/g, '_')
+        .replace(/^_|_$/g, '');
+      const safeRole = job.title
+        .replace(/[^a-zA-Z0-9]+/g, '_')
+        .replace(/^_|_$/g, '')
+        .slice(0, 32);
+      const fileName = `${safeName || 'Candidate'}_${safeCompany}_${safeRole}_Cover_Letter.docx`;
+
+      res.json({
+        coverLetter,
+        docxBase64: docxBuffer.toString('base64'),
+        fileName,
+      });
+    } catch (error: unknown) {
+      console.error('Error in POST /api/cover-letters/generate:', error);
+      const errObj = error as { status?: number; message?: string };
+      const statusCode =
+        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
+          ? errObj.status
+          : 500;
+      res.status(statusCode).json({
+        error: errObj?.message || 'Could not generate cover letter for this job.',
       });
     }
   });

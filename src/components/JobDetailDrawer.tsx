@@ -3,12 +3,15 @@ import {
   AlertCircle,
   CalendarPlus,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
   Copy,
   Download,
   ExternalLink,
+  FilePenLine,
   FileText,
+  Lock,
   Pencil,
   Plus,
   RotateCcw,
@@ -16,19 +19,27 @@ import {
   ThumbsDown,
   ThumbsUp,
   Trash2,
+  Unlock,
   Upload,
   UserPlus,
   Users,
   X,
 } from 'lucide-react';
 import {
+  EMPLOYMENT_TYPES,
+  detectIsMbaRole,
   downloadBase64Docx,
+  getCoverLetterUnlockStatus,
+  normalizeEmploymentType,
   parseResumeFileOnServer,
+  selectBestCoverLetterSampleForJob,
   selectBestResumeForJob,
 } from '../lib/resumeClient';
 import {
   CareerExperienceItem,
+  CoverLetterSample,
   DislikeReason,
+  GeneratedCoverLetter,
   JobEvent,
   JobRecord,
   NetworkingChannel,
@@ -45,6 +56,8 @@ interface JobDetailDrawerProps {
   job: JobRecord | null;
   events: JobEvent[];
   resumes: RoleResume[];
+  targetRoleTypes: string[];
+  coverLetterSamples: CoverLetterSample[];
   careerExperiences: CareerExperienceItem[];
   careerContextNotes: string;
   tailoredResult?: {
@@ -52,7 +65,13 @@ interface JobDetailDrawerProps {
     docxBase64: string;
     fileName: string;
   } | null;
+  coverLetterResult?: {
+    coverLetter: GeneratedCoverLetter;
+    docxBase64: string;
+    fileName: string;
+  } | null;
   onSaveResume: (resume: RoleResume) => void;
+  onSaveCoverLetterSample: (sample: CoverLetterSample) => void;
   onOpenResumesView: () => void;
   onSaveTailoredResult: (
     jobId: string,
@@ -62,8 +81,20 @@ interface JobDetailDrawerProps {
       fileName: string;
     }
   ) => void;
+  onSaveCoverLetterResult: (
+    jobId: string,
+    result: {
+      coverLetter: GeneratedCoverLetter;
+      docxBase64: string;
+      fileName: string;
+    }
+  ) => void;
   onClose: () => void;
   onMoveStage: (jobId: string, nextStage: PipelineStage) => void;
+  onUpdateJobAttributes: (
+    jobId: string,
+    patch: { employmentType?: string; isMbaRole?: boolean }
+  ) => void;
   onUpdateNotes: (jobId: string, notes: string) => void;
   onUpdateFullDescription: (jobId: string, fullDescription: string) => void;
   onFetchFullDescription: (jobId: string, jobUrl: string) => Promise<void>;
@@ -315,14 +346,20 @@ export function JobDetailDrawer({
   job,
   events,
   resumes,
+  targetRoleTypes,
+  coverLetterSamples,
   careerExperiences,
   careerContextNotes,
   tailoredResult,
+  coverLetterResult,
   onSaveResume,
+  onSaveCoverLetterSample,
   onOpenResumesView,
   onSaveTailoredResult,
+  onSaveCoverLetterResult,
   onClose,
   onMoveStage,
+  onUpdateJobAttributes,
   onUpdateNotes,
   onUpdateFullDescription,
   onFetchFullDescription,
@@ -352,6 +389,15 @@ export function JobDetailDrawer({
   const [isQuickUploadingResume, setIsQuickUploadingResume] = useState(false);
   const [tailorError, setTailorError] = useState<string | null>(null);
   const [showRedlinePreview, setShowRedlinePreview] = useState(true);
+
+  // Cover Letter Generator UI state
+  const [selectedSampleId, setSelectedSampleId] = useState<string>('');
+  const [coverLetterFocus, setCoverLetterFocus] = useState('');
+  const [isGeneratingCoverLetter, setIsGeneratingCoverLetter] = useState(false);
+  const [isUploadingSampleRole, setIsUploadingSampleRole] = useState<string | null>(null);
+  const [coverLetterError, setCoverLetterError] = useState<string | null>(null);
+  const [showCoverLetterPreview, setShowCoverLetterPreview] = useState(true);
+  const [coverLetterCopied, setCoverLetterCopied] = useState(false);
 
   // Scheduled events state
   const [eventDate, setEventDate] = useState('2026-11-24');
@@ -406,8 +452,13 @@ export function JobDetailDrawer({
       setLinkedInCopiedKey(null);
       setTailorError(null);
       setTailorFocus('');
+      setCoverLetterError(null);
+      setCoverLetterFocus('');
+      setCoverLetterCopied(false);
       const best = selectBestResumeForJob(job, resumes);
       setSelectedResumeId(best?.id || '');
+      const bestSample = selectBestCoverLetterSampleForJob(job, coverLetterSamples);
+      setSelectedSampleId(bestSample?.id || '');
     }
   }, [job?.id]);
 
@@ -418,6 +469,17 @@ export function JobDetailDrawer({
       setSelectedResumeId(best?.id || resumes[0].id);
     }
   }, [resumes, selectedResumeId, job]);
+
+  useEffect(() => {
+    if (!job) return;
+    if (
+      coverLetterSamples.length > 0 &&
+      !coverLetterSamples.some((s) => s.id === selectedSampleId)
+    ) {
+      const bestSample = selectBestCoverLetterSampleForJob(job, coverLetterSamples);
+      setSelectedSampleId(bestSample?.id || coverLetterSamples[0].id);
+    }
+  }, [coverLetterSamples, selectedSampleId, job]);
 
   useEffect(() => {
     if (job && !editingJd) {
@@ -441,11 +503,21 @@ export function JobDetailDrawer({
   const contacts = job.networkingContacts ?? [];
   const fullDescText = (job.fullDescription || '').trim();
   const hasRichFullDesc = fullDescText.length > 280;
-  const canFetchFromUrl =
-    Boolean(job.jobUrl) &&
-    /^https?:\/\//i.test(job.jobUrl) &&
-    !job.jobUrl.includes('.example') &&
-    !job.jobUrl.includes('mail.google.com');
+  const normalizedEmploymentType = normalizeEmploymentType(
+    job.employmentType,
+    job.title,
+    `${job.summary} ${job.fullDescription || ''}`
+  );
+  const isMbaRole = job.isMbaRole ?? detectIsMbaRole(job.title);
+  const coverLetterUnlock = getCoverLetterUnlockStatus(
+    targetRoleTypes,
+    coverLetterSamples
+  );
+  const activeCoverLetterSample =
+    coverLetterSamples.find((s) => s.id === selectedSampleId) ??
+    selectBestCoverLetterSampleForJob(job, coverLetterSamples) ??
+    coverLetterSamples[0] ??
+    null;
 
   const handleSchedule = (e: React.FormEvent) => {
     e.preventDefault();
@@ -467,10 +539,10 @@ export function JobDetailDrawer({
   };
 
   const handleFetchJdClick = async () => {
-    if (!job.jobUrl || isFetchingJd) return;
+    if (isFetchingJd) return;
     setIsFetchingJd(true);
     try {
-      await onFetchFullDescription(job.id, job.jobUrl);
+      await onFetchFullDescription(job.id, job.jobUrl || '');
     } finally {
       setIsFetchingJd(false);
     }
@@ -775,6 +847,119 @@ export function JobDetailDrawer({
     }
   };
 
+  const handleQuickUploadCoverLetterSample = async (
+    roleType: string,
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setCoverLetterError(null);
+    setIsUploadingSampleRole(roleType);
+    try {
+      const rawText = await parseResumeFileOnServer(file);
+      const existing = coverLetterSamples.find(
+        (s) => s.roleType.toLowerCase() === roleType.toLowerCase()
+      );
+      const created: CoverLetterSample = {
+        id:
+          existing?.id ||
+          `cl-${roleType.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)}-${Date.now().toString(36)}`,
+        roleType,
+        fileName: file.name,
+        rawText,
+        uploadedAt: new Date().toISOString().slice(0, 10),
+      };
+      onSaveCoverLetterSample(created);
+      setSelectedSampleId(created.id);
+    } catch (err: unknown) {
+      setCoverLetterError(
+        err instanceof Error ? err.message : 'Could not parse uploaded cover letter sample.'
+      );
+    } finally {
+      setIsUploadingSampleRole(null);
+    }
+  };
+
+  const handleGenerateCoverLetter = async () => {
+    if (!activeCoverLetterSample || isGeneratingCoverLetter) return;
+    setCoverLetterError(null);
+    setIsGeneratingCoverLetter(true);
+    try {
+      const res = await fetch('/api/cover-letters/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          job: {
+            title: job.title,
+            company: job.company,
+            location: job.location,
+            locationType: job.locationType,
+            employmentType: normalizedEmploymentType,
+            isMbaRole,
+            skills: job.skills,
+            summary: job.summary,
+            fullDescription: job.fullDescription,
+            notes: job.notes,
+          },
+          sample: activeCoverLetterSample,
+          baseResume: activeBaseResume,
+          careerExperiences,
+          careerContextNotes,
+          customInstructions: coverLetterFocus.trim() || undefined,
+        }),
+      });
+      const data = (await res.json()) as {
+        coverLetter?: GeneratedCoverLetter;
+        docxBase64?: string;
+        fileName?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.coverLetter || !data.docxBase64) {
+        throw new Error(data.error || 'Failed to generate cover letter.');
+      }
+      onSaveCoverLetterResult(job.id, {
+        coverLetter: data.coverLetter,
+        docxBase64: data.docxBase64,
+        fileName: data.fileName || `${job.company}_Cover_Letter.docx`,
+      });
+      setShowCoverLetterPreview(true);
+    } catch (err: unknown) {
+      setCoverLetterError(
+        err instanceof Error ? err.message : 'Could not generate cover letter.'
+      );
+    } finally {
+      setIsGeneratingCoverLetter(false);
+    }
+  };
+
+  const handleCopyCoverLetter = async () => {
+    if (!coverLetterResult) return;
+    const cl = coverLetterResult.coverLetter;
+    const plain = [
+      cl.candidateName,
+      cl.contactLine,
+      '',
+      cl.dateLine,
+      '',
+      cl.recipientLine,
+      '',
+      cl.salutation,
+      '',
+      ...cl.paragraphs.map((p) => `${p}\n`),
+      cl.signOff,
+    ]
+      .filter((line) => line !== undefined)
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    const ok = await copyTextToClipboard(plain);
+    if (ok) {
+      setCoverLetterCopied(true);
+      window.setTimeout(() => setCoverLetterCopied(false), 2000);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
       <div
@@ -1013,6 +1198,41 @@ export function JobDetailDrawer({
               <dt className="text-zinc-500">Discovered</dt>
               <dd className="mt-0.5 font-mono text-zinc-900 tabular-nums">
                 {job.discoveredAt} · {job.discoveredTime}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-zinc-500">Employment Type</dt>
+              <dd className="mt-1">
+                <select
+                  aria-label="Employment type"
+                  value={normalizedEmploymentType}
+                  onChange={(e) =>
+                    onUpdateJobAttributes(job.id, { employmentType: e.target.value })
+                  }
+                  className="h-7 px-2 text-xs font-medium bg-white border border-zinc-200 rounded-md text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                >
+                  {EMPLOYMENT_TYPES.map((et) => (
+                    <option key={et} value={et}>
+                      {et}
+                    </option>
+                  ))}
+                </select>
+              </dd>
+            </div>
+            <div>
+              <dt className="text-zinc-500">MBA Role</dt>
+              <dd className="mt-1.5">
+                <label className="inline-flex items-center gap-2 text-xs font-medium text-zinc-900 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={isMbaRole}
+                    onChange={(e) =>
+                      onUpdateJobAttributes(job.id, { isMbaRole: e.target.checked })
+                    }
+                    className="rounded border-zinc-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                  />
+                  <span>{isMbaRole ? 'Yes (MBA role)' : 'Mark as MBA role'}</span>
+                </label>
               </dd>
             </div>
             <div>
@@ -1366,12 +1586,264 @@ export function JobDetailDrawer({
             )}
           </div>
 
+          {/* Cover Letter Generator (.docx) — unlocked after uploading role-specific samples */}
+          <div className="pt-5 border-t border-zinc-100 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <FilePenLine className="w-3.5 h-3.5 text-blue-600" />
+                <h3 className="text-xs font-semibold text-zinc-900">
+                  Cover Letter Generator (.docx)
+                </h3>
+                {coverLetterUnlock.unlocked ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700">
+                    <Unlock className="w-3 h-3" />
+                    <span>Unlocked</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700">
+                    <Lock className="w-3 h-3" />
+                    <span>Locked</span>
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenResumesView();
+                }}
+                className="text-[11.5px] font-medium text-blue-600 hover:text-blue-700 cursor-pointer"
+              >
+                Manage Samples
+              </button>
+            </div>
+
+            {!coverLetterUnlock.unlocked ? (
+              <div className="p-3.5 bg-zinc-50/80 border border-zinc-200 rounded-lg space-y-3">
+                <div className="flex items-start gap-2 text-xs text-zinc-600 leading-relaxed">
+                  <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                  <p>
+                    Upload a sample cover letter (<span className="font-mono text-zinc-800">.docx</span>) for each target role you&apos;re looking for to unlock the Cover Letter Generator ({coverLetterUnlock.uploadedCount} of{' '}
+                    {coverLetterUnlock.requiredCount} uploaded).
+                  </p>
+                </div>
+
+                <div className="divide-y divide-zinc-200/70 bg-white border border-zinc-200 rounded-md px-3">
+                  {coverLetterUnlock.requiredRoles.map(({ roleType: reqRole, matchedSample }) => {
+                    const isUploadingThis = isUploadingSampleRole === reqRole;
+                    return (
+                      <div
+                        key={reqRole}
+                        className="py-2 flex items-center justify-between gap-2 text-xs"
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          {matchedSample ? (
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          ) : (
+                            <Lock className="w-3 h-3 text-amber-600 shrink-0" />
+                          )}
+                          <span className="font-medium text-zinc-800 truncate">
+                            {reqRole}
+                          </span>
+                        </div>
+                        {matchedSample ? (
+                          <span className="text-[11px] font-mono text-emerald-700 truncate max-w-[160px]">
+                            {matchedSample.fileName}
+                          </span>
+                        ) : (
+                          <label className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-white bg-zinc-900 hover:bg-zinc-800 rounded cursor-pointer shrink-0">
+                            <Upload className="w-3 h-3" />
+                            <span>{isUploadingThis ? 'Reading...' : 'Upload .docx'}</span>
+                            <input
+                              type="file"
+                              accept=".docx,.txt,.md,.pdf"
+                              disabled={Boolean(isUploadingSampleRole)}
+                              onChange={(e) =>
+                                void handleQuickUploadCoverLetterSample(reqRole, e)
+                              }
+                              className="sr-only"
+                            />
+                          </label>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {coverLetterError && (
+                  <div className="p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700 flex items-start gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>{coverLetterError}</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="p-3.5 bg-zinc-50/70 border border-zinc-200 rounded-lg space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                  <label
+                    htmlFor="drawer-cover-letter-sample"
+                    className="sm:col-span-3 text-[11.5px] font-medium text-zinc-600"
+                  >
+                    Voice sample
+                  </label>
+                  <select
+                    id="drawer-cover-letter-sample"
+                    value={activeCoverLetterSample?.id || ''}
+                    onChange={(e) => setSelectedSampleId(e.target.value)}
+                    className="sm:col-span-9 h-8 px-2.5 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 focus:outline-none focus:border-blue-600"
+                  >
+                    {coverLetterSamples.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.roleType} — {s.fileName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="text"
+                    value={coverLetterFocus}
+                    onChange={(e) => setCoverLetterFocus(e.target.value)}
+                    placeholder="Optional angle (e.g., highlight coffee chat with Alex or enterprise launch)"
+                    className="flex-1 h-8 px-2.5 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-600"
+                  />
+                  <button
+                    type="button"
+                    disabled={isGeneratingCoverLetter}
+                    onClick={() => void handleGenerateCoverLetter()}
+                    className="inline-flex items-center justify-center gap-1.5 h-8 px-3 text-xs font-medium text-white bg-zinc-950 hover:bg-zinc-800 disabled:bg-zinc-400 rounded-md whitespace-nowrap cursor-pointer disabled:cursor-wait shrink-0"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>
+                      {isGeneratingCoverLetter
+                        ? 'Drafting Letter...'
+                        : coverLetterResult
+                        ? 'Regenerate Letter'
+                        : 'Generate Cover Letter'}
+                    </span>
+                  </button>
+                </div>
+
+                {coverLetterError && (
+                  <div className="p-2.5 bg-red-50 border border-red-200 rounded-md flex items-start gap-2 text-xs text-red-700">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{coverLetterError}</span>
+                  </div>
+                )}
+
+                {coverLetterResult && (
+                  <div className="pt-3 border-t border-zinc-200 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-[11px] font-mono text-zinc-500">
+                        Voice: {coverLetterResult.coverLetter.roleTypeUsed} ·{' '}
+                        {coverLetterResult.coverLetter.generatedAt}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            downloadBase64Docx(
+                              coverLetterResult.docxBase64,
+                              coverLetterResult.fileName
+                            )
+                          }
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-zinc-950 hover:bg-zinc-800 rounded-md cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Download .docx</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleCopyCoverLetter()}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-zinc-50 rounded-md cursor-pointer"
+                        >
+                          {coverLetterCopied ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5" />
+                              <span>Copy Text</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    {coverLetterResult.coverLetter.tailoringNotes.length > 0 && (
+                      <div className="text-xs space-y-1">
+                        <div className="font-semibold text-zinc-800">Tailoring Notes</div>
+                        <ul className="list-disc pl-4 space-y-0.5 text-zinc-600">
+                          {coverLetterResult.coverLetter.tailoringNotes.map((note, idx) => (
+                            <li key={idx}>{note}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setShowCoverLetterPreview((v) => !v)}
+                        className="inline-flex items-center gap-1 text-[11.5px] font-medium text-zinc-700 hover:text-zinc-950 cursor-pointer"
+                      >
+                        <span>
+                          {showCoverLetterPreview ? 'Hide Letter Preview' : 'Show Letter Preview'}
+                        </span>
+                        {showCoverLetterPreview ? (
+                          <ChevronUp className="w-3.5 h-3.5" />
+                        ) : (
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+
+                      {showCoverLetterPreview && (
+                        <div className="mt-2 p-4 bg-white border border-zinc-200 rounded-md shadow-2xs space-y-2.5 text-[12px] leading-relaxed text-zinc-800 max-h-96 overflow-y-auto">
+                          <div className="border-b border-zinc-200 pb-2">
+                            <div className="text-sm font-bold text-zinc-950">
+                              {coverLetterResult.coverLetter.candidateName}
+                            </div>
+                            {coverLetterResult.coverLetter.contactLine && (
+                              <div className="text-[11px] text-zinc-500">
+                                {coverLetterResult.coverLetter.contactLine}
+                              </div>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-zinc-500">
+                            {coverLetterResult.coverLetter.dateLine}
+                          </div>
+                          {coverLetterResult.coverLetter.recipientLine && (
+                            <div className="whitespace-pre-line text-zinc-700">
+                              {coverLetterResult.coverLetter.recipientLine}
+                            </div>
+                          )}
+                          <div className="font-medium text-zinc-900">
+                            {coverLetterResult.coverLetter.salutation}
+                          </div>
+                          {coverLetterResult.coverLetter.paragraphs.map((para, pIdx) => (
+                            <p key={pIdx}>{para}</p>
+                          ))}
+                          <div className="pt-1 whitespace-pre-line font-medium text-zinc-900">
+                            {coverLetterResult.coverLetter.signOff}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Full Job Description */}
           <div className="pt-5 border-t border-zinc-100 space-y-3">
             <div className="flex items-center justify-between gap-2">
               <h3 className="text-xs font-semibold text-zinc-900">Full Job Description</h3>
               <div className="flex items-center gap-2">
-                {canFetchFromUrl && !editingJd && (
+                {!editingJd && (
                   <button
                     type="button"
                     disabled={isFetchingJd}
@@ -1379,7 +1851,13 @@ export function JobDetailDrawer({
                     className="inline-flex items-center gap-1 text-[11.5px] font-medium text-blue-600 hover:text-blue-700 disabled:text-zinc-400 cursor-pointer disabled:cursor-wait"
                   >
                     <Download className="w-3 h-3" />
-                    <span>{isFetchingJd ? 'Fetching JD...' : hasRichFullDesc ? 'Refresh JD' : 'Fetch Full JD'}</span>
+                    <span>
+                      {isFetchingJd
+                        ? 'Pulling from web...'
+                        : hasRichFullDesc
+                        ? 'Refresh JD from Web'
+                        : 'Pull Full JD from Web'}
+                    </span>
                   </button>
                 )}
                 {!editingJd && (

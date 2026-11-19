@@ -1,5 +1,11 @@
 import crypto from 'node:crypto';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import {
+  detectIsMbaRoleServer,
+  enrichIncompleteJobs,
+  isPlaceholderJobUrl,
+  normalizeEmploymentTypeServer,
+} from './agentRunner.ts';
 import type {
   AgentRunReport,
   DislikeReason,
@@ -188,6 +194,7 @@ const GMAIL_EXTRACTION_SCHEMA = {
       salaryLabel: { type: Type.STRING },
       location: { type: Type.STRING },
       locationType: { type: Type.STRING },
+      employmentType: { type: Type.STRING },
       deadlineAt: { type: Type.STRING, nullable: true },
       skills: { type: Type.ARRAY, items: { type: Type.STRING } },
       summary: { type: Type.STRING },
@@ -221,6 +228,7 @@ interface ExtractedGmailJob {
   salaryLabel: string;
   location: string;
   locationType: string;
+  employmentType?: string;
   deadlineAt?: string | null;
   skills: string[];
   summary: string;
@@ -246,9 +254,33 @@ export async function scanGmailForJobs(input: GmailScanInput): Promise<GmailScan
   });
 
   if (listRes.status === 401 || listRes.status === 403) {
-    const err = new Error(
-      'Gmail session expired or missing permission. Please sign in with Google again.'
-    ) as Error & { status?: number };
+    const rawBody = await listRes.text().catch(() => '');
+    let googleReason = '';
+    let googleMsg = '';
+    try {
+      const parsed = JSON.parse(rawBody) as {
+        error?: { message?: string; errors?: { reason?: string }[]; status?: string };
+      };
+      googleMsg = parsed.error?.message || '';
+      googleReason =
+        parsed.error?.errors?.[0]?.reason || parsed.error?.status || '';
+    } catch {
+      googleMsg = rawBody.slice(0, 180);
+    }
+
+    let friendlyMessage =
+      'Gmail session expired or missing permission. Please click Connect Gmail again.';
+    if (
+      /insufficient|scope|PERMISSION_DENIED/i.test(`${googleReason} ${googleMsg}`)
+    ) {
+      friendlyMessage =
+        'Google Sign-In succeeded, but Gmail read permission was not granted. Click Connect Gmail again and make sure the "View your email messages" checkbox is checked on the Google consent screen.';
+    } else if (/accessNotConfigured|has not been used|disabled/i.test(`${googleReason} ${googleMsg}`)) {
+      friendlyMessage =
+        'The Gmail API is not enabled on the Google Cloud project yet. Enable "Gmail API" in Google Cloud Console for your project, then reconnect.';
+    }
+
+    const err = new Error(friendlyMessage) as Error & { status?: number };
     err.status = 401;
     throw err;
   }
@@ -380,6 +412,7 @@ INSTRUCTIONS:
   - salaryLabel: e.g. "$190k – $220k" or "Not listed"
   - location: city/region or "Remote"
   - locationType: strictly "Remote", "Hybrid", or "Onsite"
+  - employmentType: strictly "Full-time", "Internship", "Part-time", or "Contract"
   - deadlineAt: "YYYY-MM-DD" if an application deadline is mentioned, else null
   - skills: 3-5 concise skills or domain tags
   - summary: 1-2 crisp sentences about the role (mentioning if it came from a LinkedIn alert, job board digest, or recruiter email)
@@ -457,6 +490,12 @@ ${JSON.stringify(emailDigestPayload)}`;
       salaryLabel: item.salaryLabel || 'Not listed',
       location: item.location || 'Unspecified',
       locationType: normalizeLocationType(item.locationType),
+      employmentType: normalizeEmploymentTypeServer(
+        item.employmentType,
+        item.title,
+        item.fullDescription || item.summary
+      ),
+      isMbaRole: detectIsMbaRoleServer(item.title),
       sourceId: 'src-gmail',
       sourceName: originName,
       atsType: 'Gmail',
@@ -476,6 +515,55 @@ ${JSON.stringify(emailDigestPayload)}`;
       notes: '',
       feedback: null,
     });
+  }
+
+  // Automatically enrich newly discovered Gmail roles missing a direct posting URL or full web JD
+  const needingEnrichment = newJobs.filter(
+    (j) => isPlaceholderJobUrl(j.jobUrl) || (j.fullDescription ?? '').trim().length < 300
+  );
+  if (needingEnrichment.length > 0) {
+    try {
+      const patches = await enrichIncompleteJobs(
+        needingEnrichment.map((j) => ({
+          id: j.id,
+          title: j.title,
+          company: j.company,
+          jobUrl: j.jobUrl,
+          salaryLabel: j.salaryLabel,
+          location: j.location,
+          locationType: j.locationType,
+          employmentType: j.employmentType,
+          skills: j.skills,
+          summary: j.summary,
+          fullDescription: j.fullDescription,
+          notes: j.notes,
+        })),
+        input.searchPrompt,
+        input.rules
+      );
+      const patchById = new Map(patches.map((p) => [p.id, p]));
+      for (const job of newJobs) {
+        const patch = patchById.get(job.id);
+        if (!patch) continue;
+        if (patch.title) {
+          job.title = patch.title;
+          job.isMbaRole = detectIsMbaRoleServer(patch.title);
+        }
+        if (patch.jobUrl) job.jobUrl = patch.jobUrl;
+        if (patch.companyDomain) job.companyDomain = patch.companyDomain;
+        if (patch.salaryLabel) job.salaryLabel = patch.salaryLabel;
+        if (typeof patch.salaryMin === 'number') job.salaryMin = patch.salaryMin;
+        if (typeof patch.salaryMax === 'number') job.salaryMax = patch.salaryMax;
+        if (patch.location) job.location = patch.location;
+        if (patch.locationType) job.locationType = patch.locationType;
+        if (patch.employmentType) job.employmentType = patch.employmentType;
+        if (patch.skills && patch.skills.length > 0) job.skills = patch.skills;
+        if (patch.summary) job.summary = patch.summary;
+        if (patch.fullDescription) job.fullDescription = patch.fullDescription;
+      }
+    } catch (err) {
+      console.error('Post-Gmail enrichment failed (non-blocking):', err);
+    }
   }
 
   const runReport: AgentRunReport = {
