@@ -112,6 +112,45 @@ const VALID_REASONS: DislikeReason[] = [
   'Location',
 ];
 
+const LEGACY_REASON_MAP: Record<string, DislikeReason> = {
+  'Not remote': 'Location',
+  'Too much travel': 'Location',
+  'Wrong seniority': 'Wrong role type',
+  'Wrong stack': 'Wrong role type',
+  'Wrong role': 'Wrong role type',
+  'Culture / company': 'Company fit',
+};
+
+function normalizeDislikeReason(reason: unknown): DislikeReason | undefined {
+  if (typeof reason !== 'string') return undefined;
+  const trimmed = reason.trim();
+  if (!trimmed) return undefined;
+  if (VALID_REASONS.includes(trimmed as DislikeReason)) {
+    return trimmed as DislikeReason;
+  }
+  const caseInsensitiveMatch = VALID_REASONS.find(
+    (r) => r.toLowerCase() === trimmed.toLowerCase()
+  );
+  if (caseInsensitiveMatch) return caseInsensitiveMatch;
+  return LEGACY_REASON_MAP[trimmed];
+}
+
+function normalizeFeedbackList(entries: FeedbackEntry[]): FeedbackEntry[] {
+  return entries.map((entry) =>
+    entry.reason !== undefined
+      ? { ...entry, reason: normalizeDislikeReason(entry.reason) }
+      : entry
+  );
+}
+
+function normalizeJobDislikeReasons(jobList: JobRecord[]): JobRecord[] {
+  return jobList.map((job) =>
+    job.dislikeReason !== undefined
+      ? { ...job, dislikeReason: normalizeDislikeReason(job.dislikeReason) }
+      : job
+  );
+}
+
 const VALID_STAGES: PipelineStage[] = [
   'inbox',
   'saved',
@@ -272,20 +311,24 @@ function loadInitialState(): PersistedState {
           parsed.sources.every((s) => LEGACY_MOCK_SOURCE_IDS.has(s.id));
 
         return {
-          jobs: backfillSeedJobDetails(parsed.jobs),
+          jobs: normalizeJobDislikeReasons(backfillSeedJobDetails(parsed.jobs)),
           sources: onlyLegacySources ? INITIAL_SOURCES : parsed.sources,
           targetCompanies: Array.isArray(parsed.targetCompanies)
             ? parsed.targetCompanies
             : [],
           events: Array.isArray(parsed.events) ? parsed.events : INITIAL_EVENTS,
           feedbackHistory: Array.isArray(parsed.feedbackHistory)
-            ? parsed.feedbackHistory
+            ? normalizeFeedbackList(parsed.feedbackHistory)
             : INITIAL_FEEDBACK,
           searchPrompt: parsed.searchPrompt ?? INITIAL_SEARCH_PROMPT,
           rules: Array.isArray(parsed.rules) ? parsed.rules : INITIAL_RULES,
           dismissedReasons: Array.isArray(parsed.dismissedReasons)
-            ? parsed.dismissedReasons.filter((r): r is DislikeReason =>
-                VALID_REASONS.includes(r)
+            ? Array.from(
+                new Set(
+                  parsed.dismissedReasons
+                    .map((r) => normalizeDislikeReason(r))
+                    .filter((r): r is DislikeReason => r !== undefined)
+                )
               )
             : [],
           lastRunLabel: parsed.lastRunLabel ?? 'Not run yet',
@@ -566,14 +609,16 @@ export default function App() {
               cloudProfileExistsRef.current = true;
               setIntakeProfile(cloud.profile);
               if (cloud.searchPrompt) setSearchPrompt(cloud.searchPrompt);
-              if (cloud.jobs.length > 0) setJobs(backfillSeedJobDetails(cloud.jobs));
+              if (cloud.jobs.length > 0) {
+                setJobs(normalizeJobDislikeReasons(backfillSeedJobDetails(cloud.jobs)));
+              }
               if (cloud.sources.length > 0) setSources(cloud.sources);
               if (cloud.targetCompanies.length > 0) {
                 setTargetCompanies(cloud.targetCompanies);
               }
               if (cloud.rules.length > 0) setRules(cloud.rules);
               if (cloud.feedbackHistory.length > 0) {
-                setFeedbackHistory(cloud.feedbackHistory);
+                setFeedbackHistory(normalizeFeedbackList(cloud.feedbackHistory));
               }
               if (cloud.events.length > 0) setEvents(cloud.events);
               if (cloud.imports.length > 0) setImportHistory(cloud.imports);
@@ -1004,13 +1049,17 @@ export default function App() {
     const counts = new Map<DislikeReason, number>();
     for (const entry of feedbackHistory) {
       if (entry.vote === 'down' && entry.reason) {
-        counts.set(entry.reason, (counts.get(entry.reason) ?? 0) + 1);
+        const normalized = normalizeDislikeReason(entry.reason);
+        if (normalized) {
+          counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+        }
       }
     }
 
     const suggestions: RuleSuggestion[] = [];
     counts.forEach((count, reason) => {
       const template = REASON_TO_RULE[reason];
+      if (!template) return;
       const alreadyActiveRule = rules.some(
         (r) => r.text.toLowerCase() === template.rule.toLowerCase()
       );

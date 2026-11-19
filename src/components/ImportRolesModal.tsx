@@ -136,10 +136,14 @@ export function ImportRolesModal({
     });
   }, [rows, mapping, existingHashSet, fileName, extractUntitledAsTargetCompanies]);
 
-  const parsedTargetCompanies = useMemo(
-    () => parseTargetCompaniesCsv(companyCsvText),
-    [companyCsvText]
-  );
+  const parsedTargetCompanies = useMemo(() => {
+    if (!companyCsvText.trim()) return [];
+    try {
+      return parseTargetCompaniesCsv(companyCsvText);
+    } catch {
+      return [];
+    }
+  }, [companyCsvText]);
 
   if (!open) return null;
 

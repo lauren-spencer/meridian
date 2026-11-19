@@ -392,7 +392,7 @@ export function buildNormalizedJobsFromMapping(params: {
 export function parseTargetCompaniesCsv(rawText: string): ParsedTargetCompanyRow[] {
   const trimmed = rawText.trim();
   if (!trimmed) {
-    throw new Error('CSV or text input is empty.');
+    return [];
   }
 
   const firstNewline = trimmed.indexOf('\n');
@@ -401,7 +401,7 @@ export function parseTargetCompaniesCsv(rawText: string): ParsedTargetCompanyRow
   const matrix = parseDelimitedRows(trimmed, delimiter);
 
   if (matrix.length === 0) {
-    throw new Error('No company rows found in the uploaded CSV.');
+    return [];
   }
 
   const headerRow = matrix[0].map((c) => c.trim().toLowerCase());
@@ -457,10 +457,6 @@ export function parseTargetCompaniesCsv(rawText: string): ParsedTargetCompanyRow
       careersUrl: normalizedUrl,
       notes: rawNotes ? rawNotes.slice(0, 400) : undefined,
     });
-  }
-
-  if (companies.length === 0) {
-    throw new Error('Could not find any company names in the uploaded CSV.');
   }
 
   return companies;
