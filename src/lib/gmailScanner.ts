@@ -14,6 +14,13 @@ import type {
 } from '../types/job.ts';
 import { formatIsoDateInTimeZone, formatTimeInTimeZone } from './dateTime.ts';
 import { GEMINI_LITE_MODEL, LITE_THINKING_CONFIG } from './geminiModels.ts';
+import {
+  canonicalizeJobUrl,
+  hasMatchingDedupeKey,
+  normalizeCompanyKey,
+  normalizeTitleKey,
+  registerDedupeKeys,
+} from './jobDedupe.ts';
 
 let cachedClient: GoogleGenAI | null = null;
 
@@ -146,10 +153,11 @@ function detectSenderOrigin(from: string, subject: string): string {
   return 'Gmail Alert';
 }
 
-function hashEmailJob(messageId: string, title: string, company: string, jobUrl?: string): string {
-  const canonical = jobUrl && /^https?:\/\//i.test(jobUrl)
-    ? jobUrl.split('#')[0].split('?')[0].toLowerCase()
-    : `gmail:${messageId}:${company.toLowerCase()}:${title.toLowerCase()}`;
+function hashEmailJob(title: string, company: string, jobUrl?: string): string {
+  const canonicalUrl = canonicalizeJobUrl(jobUrl);
+  const canonical = canonicalUrl
+    ? canonicalUrl
+    : `role:${normalizeCompanyKey(company) || company.trim().toLowerCase()}::${normalizeTitleKey(title) || title.trim().toLowerCase()}`;
   return crypto.createHash('sha256').update(canonical).digest('hex').slice(0, 16);
 }
 
@@ -459,12 +467,21 @@ ${JSON.stringify(emailDigestPayload)}`;
         ? item.jobUrl
         : `https://mail.google.com/mail/u/0/#inbox/${item.messageId}`;
 
-    const urlHash = hashEmailJob(item.messageId, item.title, item.company, item.jobUrl ?? undefined);
-    if (existingSet.has(urlHash) || seenInBatch.has(urlHash)) {
+    const urlHash = hashEmailJob(item.title, item.company, item.jobUrl ?? undefined);
+    const dedupeCandidate = {
+      urlHash,
+      jobUrl: item.jobUrl ?? undefined,
+      company: item.company,
+      title: item.title,
+    };
+    if (
+      hasMatchingDedupeKey(existingSet, dedupeCandidate) ||
+      hasMatchingDedupeKey(seenInBatch, dedupeCandidate)
+    ) {
       duplicatesSkipped += 1;
       continue;
     }
-    seenInBatch.add(urlHash);
+    registerDedupeKeys(seenInBatch, dedupeCandidate);
 
     const originName =
       item.originLabel ||

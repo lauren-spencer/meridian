@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   ArrowUpDown,
   Building2,
+  Layers,
   Link2,
   RefreshCw,
   Search,
@@ -67,6 +68,9 @@ interface TableViewProps {
   onChangePriority: (jobId: string, priority: JobPriority | null) => void;
   onOpenAddByUrl?: () => void;
   onMoveUntitledToTargetCompanies?: () => void;
+  duplicateGroupCount?: number;
+  duplicateExtraCount?: number;
+  onOpenDeduplicate?: () => void;
   onRunAgent: () => void;
   onRescoreActiveJobs: () => void;
   initialTab?: TableTab;
@@ -110,6 +114,9 @@ export function TableView({
   onChangePriority,
   onOpenAddByUrl,
   onMoveUntitledToTargetCompanies,
+  duplicateGroupCount = 0,
+  duplicateExtraCount = 0,
+  onOpenDeduplicate,
   onRunAgent,
   onRescoreActiveJobs,
   initialTab = 'active',
@@ -389,6 +396,30 @@ export function TableView({
             </button>
           )}
 
+          {onOpenDeduplicate && (
+            <button
+              type="button"
+              onClick={onOpenDeduplicate}
+              title={
+                duplicateExtraCount > 0
+                  ? `Review and merge ${duplicateExtraCount} duplicate roles`
+                  : 'Check for duplicate roles in your workspace'
+              }
+              className={`inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium rounded-md border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                duplicateExtraCount > 0
+                  ? 'text-amber-800 bg-amber-50 border-amber-300 hover:bg-amber-100/80'
+                  : 'text-zinc-700 bg-white border-zinc-200 hover:bg-zinc-50'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>
+                {duplicateExtraCount > 0
+                  ? `Duplicates (${duplicateExtraCount})`
+                  : 'Check Duplicates'}
+              </span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={onRescoreActiveJobs}
@@ -401,6 +432,29 @@ export function TableView({
           </button>
         </div>
       </div>
+
+      {/* Duplicate Roles Detection & Cleanup Banner */}
+      {duplicateExtraCount > 0 && onOpenDeduplicate && (
+        <div className="px-4 py-3 bg-amber-50/75 border border-amber-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5 text-xs text-zinc-700">
+            <Layers className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <p className="leading-relaxed">
+              <strong className="font-semibold text-zinc-950">
+                {duplicateExtraCount} duplicate {duplicateExtraCount === 1 ? 'role' : 'roles'} detected
+              </strong>{' '}
+              across {duplicateGroupCount} {duplicateGroupCount === 1 ? 'group' : 'groups'} (same posting link or role &amp; company). Review and merge them into single clean entries without losing notes, contacts, or pipeline stage.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenDeduplicate}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-zinc-900 hover:bg-zinc-800 rounded-md whitespace-nowrap shrink-0 cursor-pointer self-start sm:self-center"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>Review &amp; Merge</span>
+          </button>
+        </div>
+      )}
 
       {/* Untitled Role -> Target Companies Watchlist Helper Banner */}
       {counts.untitledCount > 0 && onMoveUntitledToTargetCompanies && (

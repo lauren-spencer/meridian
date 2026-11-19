@@ -14,6 +14,13 @@ import type {
 } from '../types/job.ts';
 import { formatIsoDateInTimeZone, formatTimeInTimeZone } from './dateTime.ts';
 import { GEMINI_LITE_MODEL, LITE_THINKING_CONFIG } from './geminiModels.ts';
+import {
+  canonicalizeJobUrl,
+  hasMatchingDedupeKey,
+  normalizeCompanyKey,
+  normalizeTitleKey,
+  registerDedupeKeys,
+} from './jobDedupe.ts';
 
 const MODEL_NAME = GEMINI_LITE_MODEL;
 
@@ -259,15 +266,22 @@ ${parsedMessages
 
   for (const item of parsed.jobs ?? []) {
     if (!item.title || !item.company) continue;
-    const dedupKey = item.jobUrl?.trim()
-      ? item.jobUrl.trim()
-      : `${item.company}|${item.title}|${item.location || ''}`;
+    const canonicalUrl = canonicalizeJobUrl(item.jobUrl);
+    const dedupKey = canonicalUrl
+      ? canonicalUrl
+      : `role:${normalizeCompanyKey(item.company) || item.company.trim().toLowerCase()}::${normalizeTitleKey(item.title) || item.title.trim().toLowerCase()}`;
     const urlHash = sha256Short(dedupKey);
-    if (existingSet.has(urlHash)) {
+    const dedupeCandidate = {
+      urlHash,
+      jobUrl: item.jobUrl,
+      company: item.company,
+      title: item.title,
+    };
+    if (hasMatchingDedupeKey(existingSet, dedupeCandidate)) {
       duplicatesSkipped += 1;
       continue;
     }
-    existingSet.add(urlHash);
+    registerDedupeKeys(existingSet, dedupeCandidate);
 
     const locType: LocationType =
       item.locationType === 'Hybrid' || item.locationType === 'Onsite'

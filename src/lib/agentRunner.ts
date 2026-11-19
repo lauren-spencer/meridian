@@ -13,6 +13,11 @@ import type {
 } from '../types/job.ts';
 import { formatIsoDateInTimeZone, formatTimeInTimeZone } from './dateTime.ts';
 import { GEMINI_LITE_MODEL, LITE_THINKING_CONFIG } from './geminiModels.ts';
+import {
+  canonicalizeJobUrl,
+  hasMatchingDedupeKey,
+  registerDedupeKeys,
+} from './jobDedupe.ts';
 
 let cachedClient: GoogleGenAI | null = null;
 
@@ -94,19 +99,7 @@ export interface AgentRunOutput {
 const FETCH_TIMEOUT_MS = 10_000;
 
 function canonicalizeUrl(rawUrl: string): string {
-  try {
-    const u = new URL(rawUrl);
-    u.hash = '';
-    const dropParams = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'gh_src', 'lever-source'];
-    for (const key of dropParams) {
-      u.searchParams.delete(key);
-    }
-    const normalizedPath = u.pathname.replace(/\/+$/, '') || '/';
-    u.pathname = normalizedPath;
-    return u.toString().toLowerCase();
-  } catch {
-    return rawUrl.trim().toLowerCase();
-  }
+  return canonicalizeJobUrl(rawUrl) || rawUrl.trim().toLowerCase();
 }
 
 export function hashCanonicalUrl(rawUrl: string): string {
@@ -1360,10 +1353,13 @@ export async function runAgentPipeline(input: AgentRunInput): Promise<AgentRunOu
         let duplicatesSkipped = 0;
 
         for (const posting of rawPostings) {
-          if (existingSet.has(posting.urlHash) || seenInThisRun.has(posting.urlHash)) {
+          if (
+            hasMatchingDedupeKey(existingSet, posting) ||
+            hasMatchingDedupeKey(seenInThisRun, posting)
+          ) {
             duplicatesSkipped += 1;
           } else {
-            seenInThisRun.add(posting.urlHash);
+            registerDedupeKeys(seenInThisRun, posting);
             allUnseen.push(posting);
           }
         }
@@ -1416,10 +1412,13 @@ export async function runAgentPipeline(input: AgentRunInput): Promise<AgentRunOu
             tcRawFetched += directPostings.length;
             let companyUnseen = 0;
             for (const posting of directPostings) {
-              if (existingSet.has(posting.urlHash) || seenInThisRun.has(posting.urlHash)) {
+              if (
+                hasMatchingDedupeKey(existingSet, posting) ||
+                hasMatchingDedupeKey(seenInThisRun, posting)
+              ) {
                 tcDupes += 1;
               } else {
-                seenInThisRun.add(posting.urlHash);
+                registerDedupeKeys(seenInThisRun, posting);
                 allUnseen.push(posting);
                 companyUnseen += 1;
               }
@@ -1443,10 +1442,13 @@ export async function runAgentPipeline(input: AgentRunInput): Promise<AgentRunOu
         );
         tcRawFetched += webPostings.length;
         for (const posting of webPostings) {
-          if (existingSet.has(posting.urlHash) || seenInThisRun.has(posting.urlHash)) {
+          if (
+            hasMatchingDedupeKey(existingSet, posting) ||
+            hasMatchingDedupeKey(seenInThisRun, posting)
+          ) {
             tcDupes += 1;
           } else {
-            seenInThisRun.add(posting.urlHash);
+            registerDedupeKeys(seenInThisRun, posting);
             allUnseen.push(posting);
             checkedCompanyMap.set(
               posting.sourceId,

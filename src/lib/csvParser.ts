@@ -6,6 +6,13 @@ import type {
 } from '../types/job';
 import { formatIsoDateInTimeZone, formatTimeInTimeZone } from './dateTime';
 import { detectIsMbaRole, normalizeEmploymentType } from './resumeClient';
+import {
+  canonicalizeJobUrl,
+  hasMatchingDedupeKey,
+  normalizeCompanyKey,
+  normalizeTitleKey,
+  registerDedupeKeys,
+} from './jobDedupe';
 
 export interface ParsedTabularData {
   headers: string[];
@@ -325,14 +332,23 @@ export function buildNormalizedJobsFromMapping(params: {
     const finalTitle = title || 'Untitled Role';
     const finalCompany = company || 'Unspecified Company';
     const location = getVal(row, 'location') || 'Unspecified';
-    const dedupKey = jobUrl || `${finalCompany}|${finalTitle}|${location}`;
+    const canonicalUrl = canonicalizeJobUrl(jobUrl);
+    const dedupKey = canonicalUrl
+      ? canonicalUrl
+      : `role:${normalizeCompanyKey(finalCompany) || finalCompany.toLowerCase()}::${normalizeTitleKey(finalTitle) || finalTitle.toLowerCase()}`;
     const urlHash = computeClientHash(dedupKey);
+    const dedupeCandidate = {
+      urlHash,
+      jobUrl,
+      company: finalCompany,
+      title: finalTitle,
+    };
 
-    if (seen.has(urlHash)) {
+    if (hasMatchingDedupeKey(seen, dedupeCandidate)) {
       skippedDuplicates += 1;
       continue;
     }
-    seen.add(urlHash);
+    registerDedupeKeys(seen, dedupeCandidate);
 
     const salaryLabel = getVal(row, 'salaryLabel') || 'Not listed';
     const { min, max } = parseSalaryBounds(salaryLabel);

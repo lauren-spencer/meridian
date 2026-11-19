@@ -1,5 +1,6 @@
 import type { Response } from 'express';
 import { runAgentPipeline, type AgentRunInput, type AgentRunOutput } from './agentRunner.ts';
+import { buildJobDedupeKeys } from './jobDedupe.ts';
 import type { ServerScheduleState } from '../types/job.ts';
 
 interface SseClient {
@@ -148,11 +149,11 @@ class RealtimeAgentHub {
       const output = await runAgentPipeline(input);
       output.runReport.trigger = trigger;
 
-      // Keep server-side dedup hashes up to date immediately for subsequent scheduled runs
+      // Keep server-side dedup keys up to date immediately for subsequent scheduled runs
       if (this.latestContext) {
         const merged = new Set([
           ...this.latestContext.existingHashes,
-          ...output.newJobs.map((j) => j.urlHash),
+          ...output.newJobs.flatMap((j) => buildJobDedupeKeys(j)),
         ]);
         this.latestContext.existingHashes = Array.from(merged);
       }

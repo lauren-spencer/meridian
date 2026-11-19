@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import { CalendarView } from './components/CalendarView';
 import { ChatDrawer } from './components/ChatDrawer';
 import { CriteriaView } from './components/CriteriaView';
+import { DeduplicateModal } from './components/DeduplicateModal';
 import { ImportRolesModal } from './components/ImportRolesModal';
 import { IntakeModal } from './components/IntakeModal';
 import { JobDetailDrawer } from './components/JobDetailDrawer';
@@ -78,6 +79,13 @@ import {
   createDefaultIntakeProfile,
 } from './lib/intakeHelpers';
 import { detectIsMbaRole, normalizeEmploymentType } from './lib/resumeClient';
+import {
+  buildExistingDedupeTokens,
+  computeMergedDuplicateJob,
+  findDuplicateJobGroups,
+  findMatchingExistingJob,
+  normalizeCompanyKey,
+} from './lib/jobDedupe';
 import {
   AgentRunReport,
   AiRuleSuggestion,
@@ -507,6 +515,7 @@ export default function App() {
     setIntakeOpen(true);
   }, []);
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [dedupeModalOpen, setDedupeModalOpen] = useState(false);
   const [importModalMode, setImportModalMode] = useState<
     'url' | 'roles' | 'companies'
   >('roles');
@@ -860,10 +869,13 @@ export default function App() {
               : prev;
 
           if (addedJobs.length > 0) {
-            const existing = new Set(updatedPrev.map((j) => j.urlHash));
-            const uniqueNew = addedJobs
-              .filter((j) => !existing.has(j.urlHash))
-              .map((j) => ({
+            const uniqueNew: JobRecord[] = [];
+            const combined = [...updatedPrev];
+            for (const j of addedJobs) {
+              if (findMatchingExistingJob(j, combined)) {
+                continue;
+              }
+              const normalized: JobRecord = {
                 ...j,
                 employmentType: normalizeEmploymentType(
                   j.employmentType,
@@ -874,7 +886,10 @@ export default function App() {
                   typeof j.isMbaRole === 'boolean'
                     ? j.isMbaRole
                     : detectIsMbaRole(j.title),
-              }));
+              };
+              uniqueNew.push(normalized);
+              combined.push(normalized);
+            }
             if (uniqueNew.length > 0) {
               persistCloud((uid) => createJobsInCloud(uid, uniqueNew));
               return [...uniqueNew, ...updatedPrev];
@@ -1114,7 +1129,7 @@ export default function App() {
           sources,
           targetCompanies,
           incompleteJobs: getIncompleteJobsForEnrichment(jobs),
-          existingHashes: jobs.map((j) => j.urlHash),
+          existingHashes: buildExistingDedupeTokens(jobs),
           searchPrompt,
           rules: rules.map((r) => ({ text: r.text, active: r.active })),
           recentFeedback: feedbackHistory.slice(0, 15).map((f) => ({
@@ -1882,7 +1897,7 @@ export default function App() {
           : detectIsMbaRole(data.job.title),
     };
 
-    const existing = jobs.find((j) => j.urlHash === normalizedJob.urlHash);
+    const existing = findMatchingExistingJob(normalizedJob, jobs);
     if (existing) {
       setSelectedJobId(existing.id);
       pushToast(`"${existing.title}" at ${existing.company} is already in your pipeline`);
@@ -1945,7 +1960,7 @@ export default function App() {
           body: JSON.stringify({
             query: queryOverride ?? effectiveGmailQuery,
             maxMessages: 14,
-            existingHashes: jobs.map((j) => j.urlHash),
+            existingHashes: buildExistingDedupeTokens(jobs),
             searchPrompt: promptOverride ?? searchPrompt,
             rules: rules.map((r) => ({ text: r.text, active: r.active })),
             recentFeedback: feedbackHistory.slice(0, 15).map((f) => ({
@@ -2074,7 +2089,7 @@ export default function App() {
           },
           body: JSON.stringify({
             channels: channelsOverride ?? intakeProfile.slackChannels,
-            existingHashes: jobs.map((j) => j.urlHash),
+            existingHashes: buildExistingDedupeTokens(jobs),
             searchPrompt: promptOverride ?? searchPrompt,
             rules: rules.map((r) => ({ text: r.text, active: r.active })),
             recentFeedback: feedbackHistory.slice(0, 15).map((f) => ({
@@ -2386,7 +2401,7 @@ export default function App() {
         body: JSON.stringify({
           rawText,
           groupName,
-          existingHashes: jobs.map((j) => j.urlHash),
+          existingHashes: buildExistingDedupeTokens(jobs),
           searchPrompt,
           rules: rules.map((r) => ({ text: r.text, active: r.active })),
           recentFeedback: feedbackHistory.slice(0, 15).map((f) => ({
@@ -2466,8 +2481,15 @@ export default function App() {
     skippedDuplicates: number;
     autoScoreWithAi: boolean;
   }) => {
-    const existing = new Set(jobs.map((j) => j.urlHash));
-    const uniqueNew = params.jobs.filter((j) => !existing.has(j.urlHash));
+    const uniqueNew: JobRecord[] = [];
+    const combined = [...jobs];
+    for (const candidate of params.jobs) {
+      if (findMatchingExistingJob(candidate, combined)) {
+        continue;
+      }
+      uniqueNew.push(candidate);
+      combined.push(candidate);
+    }
     if (uniqueNew.length === 0) {
       pushToast('All uploaded roles are already in your database.');
       return;
@@ -2519,8 +2541,9 @@ export default function App() {
   ) => {
     const cleanName = name.trim();
     if (!cleanName) return;
+    const normNew = normalizeCompanyKey(cleanName) || cleanName.toLowerCase();
     const exists = targetCompanies.some(
-      (c) => c.name.trim().toLowerCase() === cleanName.toLowerCase()
+      (c) => (normalizeCompanyKey(c.name) || c.name.trim().toLowerCase()) === normNew
     );
     if (exists) {
       pushToast(`"${cleanName}" is already in your Target Companies Watchlist.`);
@@ -2545,14 +2568,14 @@ export default function App() {
     sourceLabel?: string
   ) => {
     const existingKeys = new Set(
-      targetCompanies.map((c) => c.name.trim().toLowerCase())
+      targetCompanies.map((c) => normalizeCompanyKey(c.name) || c.name.trim().toLowerCase())
     );
     const created: TargetCompany[] = [];
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const cleanName = row.name.trim();
       if (!cleanName) continue;
-      const key = cleanName.toLowerCase();
+      const key = normalizeCompanyKey(cleanName) || cleanName.toLowerCase();
       if (existingKeys.has(key)) continue;
       existingKeys.add(key);
       created.push({
@@ -2646,6 +2669,163 @@ export default function App() {
     );
   };
 
+  // Duplicate role detection & zero-loss smart merge
+  const duplicateGroups = useMemo(() => findDuplicateJobGroups(jobs), [jobs]);
+  const duplicateExtraCount = useMemo(
+    () =>
+      duplicateGroups.reduce(
+        (sum, group) => sum + Math.max(0, group.jobs.length - 1),
+        0
+      ),
+    [duplicateGroups]
+  );
+  const existingDedupeTokens = useMemo(
+    () => buildExistingDedupeTokens(jobs),
+    [jobs]
+  );
+
+  const handleOpenDeduplicate = () => {
+    if (duplicateGroups.length === 0) {
+      pushToast(`No duplicates found — all ${jobs.length} roles are unique.`);
+      return;
+    }
+    setDedupeModalOpen(true);
+  };
+
+  const handleMergeDuplicates = async (
+    selections: { primaryId: string; duplicateIds: string[] }[]
+  ) => {
+    const jobById = new Map(jobs.map((j) => [j.id, j]));
+    const mergedByPrimaryId = new Map<
+      string,
+      ReturnType<typeof computeMergedDuplicateJob>
+    >();
+    const allRemovedIds = new Set<string>();
+    const redirectMap = new Map<string, string>();
+
+    for (const sel of selections) {
+      const primary = jobById.get(sel.primaryId);
+      if (!primary) continue;
+      const duplicates = sel.duplicateIds
+        .map((id) => jobById.get(id))
+        .filter((j): j is JobRecord => Boolean(j));
+      if (duplicates.length === 0) continue;
+
+      const result = computeMergedDuplicateJob(primary, duplicates);
+      mergedByPrimaryId.set(primary.id, result);
+      for (const dupId of result.removedJobIds) {
+        allRemovedIds.add(dupId);
+        redirectMap.set(dupId, primary.id);
+      }
+    }
+
+    if (allRemovedIds.size === 0) return;
+
+    // Update local jobs immediately
+    setJobs((prev) =>
+      prev
+        .filter((j) => !allRemovedIds.has(j.id))
+        .map((j) => {
+          const merged = mergedByPrimaryId.get(j.id);
+          return merged ? merged.mergedJob : j;
+        })
+    );
+
+    // Redirect open drawer if it was viewing a removed duplicate
+    setSelectedJobId((prev) => (prev && redirectMap.has(prev) ? redirectMap.get(prev)! : prev));
+
+    // Re-link any calendar events pointing to removed duplicate job IDs
+    const eventsToRelink = events.filter((ev) => redirectMap.has(ev.jobId));
+    const relinkedEvents: { oldId: string; nextEvent: JobEvent }[] = eventsToRelink.map(
+      (ev, idx) => ({
+        oldId: ev.id,
+        nextEvent: {
+          ...ev,
+          id: `evt-m-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
+          jobId: redirectMap.get(ev.jobId)!,
+        },
+      })
+    );
+
+    if (relinkedEvents.length > 0) {
+      const replacedById = new Map(relinkedEvents.map((r) => [r.oldId, r.nextEvent]));
+      setEvents((prev) => prev.map((ev) => replacedById.get(ev.id) ?? ev));
+    }
+
+    // Persist merges, re-linked events, and batch deletions to Firestore
+    const uid = authUidRef.current;
+    if (uid) {
+      try {
+        const cloudOps: Promise<void>[] = [];
+        for (const res of mergedByPrimaryId.values()) {
+          const mj = res.mergedJob;
+          cloudOps.push(
+            (async () => {
+              if (res.detailsChanged) {
+                await updateJobDetailsInCloud(uid, mj.id, {
+                  title: mj.title,
+                  company: mj.company,
+                  companyDomain: mj.companyDomain,
+                  salaryMin: mj.salaryMin,
+                  salaryMax: mj.salaryMax,
+                  salaryLabel: mj.salaryLabel,
+                  location: mj.location,
+                  locationType: mj.locationType,
+                  employmentType: mj.employmentType,
+                  isMbaRole: mj.isMbaRole,
+                  priority: mj.priority ?? null,
+                  jobUrl: mj.jobUrl,
+                  deadlineAt: mj.deadlineAt,
+                  skills: mj.skills,
+                  summary: mj.summary,
+                  fullDescription: mj.fullDescription,
+                });
+              }
+              if (res.notesChanged) {
+                await updateJobNotesInCloud(uid, mj.id, mj.notes);
+              }
+              if (res.contactsChanged && mj.networkingContacts) {
+                await updateJobNetworkingContactsInCloud(
+                  uid,
+                  mj.id,
+                  mj.networkingContacts
+                );
+              }
+              if (res.triageChanged) {
+                await updateJobTriageInCloud(uid, mj.id, {
+                  stage: mj.stage,
+                  isNew: mj.isNew,
+                  feedback: mj.feedback,
+                  dislikeReason: mj.dislikeReason,
+                });
+              }
+            })()
+          );
+        }
+
+        for (const relink of relinkedEvents) {
+          cloudOps.push(createEventInCloud(uid, relink.nextEvent));
+          cloudOps.push(deleteEventInCloud(uid, relink.oldId));
+        }
+
+        cloudOps.push(deleteJobsBatchInCloud(uid, Array.from(allRemovedIds)));
+        await Promise.all(cloudOps);
+      } catch (err) {
+        console.error('Failed to persist duplicate merge to Firestore:', err);
+        pushToast('Merged locally, but cloud sync hit an error. Please refresh to verify.');
+        return;
+      }
+    }
+
+    pushToast(
+      `Merged and removed ${allRemovedIds.size} duplicate ${
+        allRemovedIds.size === 1 ? 'role' : 'roles'
+      } across ${mergedByPrimaryId.size} ${
+        mergedByPrimaryId.size === 1 ? 'group' : 'groups'
+      }`
+    );
+  };
+
   // Live ATS Agent Runner (also checks Target Companies, enriches incomplete roles, and scans Gmail & Slack when connected)
   const executeAgentRun = async (
     targetSourceId?: string,
@@ -2700,7 +2880,7 @@ export default function App() {
             sources: targetSources,
             targetCompanies: activeTargetCompanies,
             incompleteJobs,
-            existingHashes: jobs.map((j) => j.urlHash),
+            existingHashes: buildExistingDedupeTokens(jobs),
             searchPrompt: activePrompt,
             rules: rules.map((r) => ({ text: r.text, active: r.active })),
             recentFeedback: feedbackHistory.slice(0, 15).map((f) => ({
@@ -2849,7 +3029,7 @@ export default function App() {
           sources: nextSources,
           targetCompanies,
           incompleteJobs: getIncompleteJobsForEnrichment(jobs),
-          existingHashes: jobs.map((j) => j.urlHash),
+          existingHashes: buildExistingDedupeTokens(jobs),
           searchPrompt: compiledPrompt,
           rules: rules.map((r) => ({ text: r.text, active: r.active })),
           recentFeedback: feedbackHistory.slice(0, 15).map((f) => ({
@@ -2943,7 +3123,7 @@ export default function App() {
             sources,
             targetCompanies,
             incompleteJobs: getIncompleteJobsForEnrichment(jobs),
-            existingHashes: jobs.map((j) => j.urlHash),
+            existingHashes: buildExistingDedupeTokens(jobs),
             searchPrompt,
             rules: rules.map((r) => ({ text: r.text, active: r.active })),
             recentFeedback: feedbackHistory.slice(0, 15).map((f) => ({
@@ -3371,6 +3551,9 @@ export default function App() {
               }
               onOpenAddByUrl={() => openImportModal('url')}
               onMoveUntitledToTargetCompanies={handleMoveUntitledToTargetCompanies}
+              duplicateGroupCount={duplicateGroups.length}
+              duplicateExtraCount={duplicateExtraCount}
+              onOpenDeduplicate={handleOpenDeduplicate}
               onRunAgent={handleRunAgent}
               onRescoreActiveJobs={handleRescoreActiveJobs}
               initialTab={preferredTableTab}
@@ -3568,11 +3751,19 @@ export default function App() {
       <ImportRolesModal
         open={importModalOpen}
         initialMode={importModalMode}
-        existingHashes={jobs.map((j) => j.urlHash)}
+        existingHashes={existingDedupeTokens}
         onClose={() => setImportModalOpen(false)}
         onAddJobByUrl={handleAddRoleByUrl}
         onImportJobs={handleImportJobs}
         onImportTargetCompanies={handleImportTargetCompanies}
+      />
+
+      {/* Duplicate Roles Review & Smart Merge Modal */}
+      <DeduplicateModal
+        open={dedupeModalOpen}
+        groups={duplicateGroups}
+        onClose={() => setDedupeModalOpen(false)}
+        onConfirmMerge={handleMergeDuplicates}
       />
 
       {/* Job Detail Slide-over Drawer */}
