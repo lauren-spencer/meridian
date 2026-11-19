@@ -23,6 +23,7 @@ import {
   INITIAL_SOURCES,
   VERIFIED_LIVE_PRESETS,
 } from './data/initialData';
+import { getClientTimeZone } from './lib/dateTime';
 import {
   createEventInCloud,
   createFeedbackInCloud,
@@ -1122,6 +1123,7 @@ export default function App() {
             vote: f.vote,
             reason: f.reason,
           })),
+          timeZone: getClientTimeZone(),
         }),
       }).catch(() => {
         // Non-blocking sync
@@ -1223,6 +1225,7 @@ export default function App() {
             searchPrompt,
             rules: rules.map((r) => ({ text: r.text, active: r.active })),
             recentFeedback: buildRichFeedback(),
+            timeZone: getClientTimeZone(),
           }),
         });
         const data = (await res.json()) as Partial<PreferenceSynthesisResult> & {
@@ -1734,6 +1737,7 @@ export default function App() {
         rules: rules.map((r) => ({ text: r.text, active: r.active })),
         recentFeedback: buildRichFeedback(),
         stage,
+        timeZone: getClientTimeZone(),
       }),
     });
     const data = (await res.json()) as { job?: JobRecord; error?: string };
@@ -1855,6 +1859,7 @@ export default function App() {
         rules: rules.map((r) => ({ text: r.text, active: r.active })),
         recentFeedback: buildRichFeedback(),
         stage,
+        timeZone: getClientTimeZone(),
       }),
     });
     const data = (await res.json()) as { job?: JobRecord; error?: string };
@@ -1949,6 +1954,7 @@ export default function App() {
               vote: f.vote,
               reason: f.reason,
             })),
+            timeZone: getClientTimeZone(),
           }),
         });
 
@@ -2077,6 +2083,7 @@ export default function App() {
               vote: f.vote,
               reason: f.reason,
             })),
+            timeZone: getClientTimeZone(),
           }),
         });
 
@@ -2388,6 +2395,7 @@ export default function App() {
             vote: f.vote,
             reason: f.reason,
           })),
+          timeZone: getClientTimeZone(),
         }),
       });
       const data = (await res.json()) as {
@@ -2702,6 +2710,7 @@ export default function App() {
               reason: f.reason,
             })),
             maxNewPerRun: targetSourceId ? 4 : 8,
+            timeZone: getClientTimeZone(),
           }),
         });
 
@@ -2849,6 +2858,7 @@ export default function App() {
             vote: f.vote,
             reason: f.reason,
           })),
+          timeZone: getClientTimeZone(),
         },
       }),
     })
@@ -2942,6 +2952,7 @@ export default function App() {
               vote: f.vote,
               reason: f.reason,
             })),
+            timeZone: getClientTimeZone(),
           },
         }),
       });

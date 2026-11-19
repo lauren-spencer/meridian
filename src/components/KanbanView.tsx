@@ -4,6 +4,7 @@ import { DislikeReason, JobPriority, JobRecord, PipelineStage } from '../types/j
 import { DislikeReasonPopover } from './DislikeReasonPopover';
 
 const PRIORITY_RANK: Record<JobPriority, number> = {
+  asap: 4,
   high: 3,
   medium: 2,
   low: 1,
@@ -11,6 +12,8 @@ const PRIORITY_RANK: Record<JobPriority, number> = {
 
 function prioritySelectClass(priority?: JobPriority): string {
   switch (priority) {
+    case 'asap':
+      return 'text-rose-800 font-semibold bg-rose-100/80 border-rose-300';
     case 'high':
       return 'text-red-700 font-semibold bg-red-50/70 border-red-200';
     case 'medium':
@@ -260,7 +263,10 @@ export function KanbanView({
                             const val = e.target.value;
                             onChangePriority(
                               job.id,
-                              val === 'high' || val === 'medium' || val === 'low'
+                              val === 'asap' ||
+                                val === 'high' ||
+                                val === 'medium' ||
+                                val === 'low'
                                 ? val
                                 : null
                             );
@@ -270,9 +276,10 @@ export function KanbanView({
                           )}`}
                         >
                           <option value="">Priority</option>
-                          <option value="high">High</option>
-                          <option value="medium">Medium</option>
                           <option value="low">Low</option>
+                          <option value="medium">Medium</option>
+                          <option value="high">High</option>
+                          <option value="asap">ASAP</option>
                         </select>
                       </div>
 

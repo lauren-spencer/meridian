@@ -24,6 +24,7 @@ import {
   X,
 } from 'lucide-react';
 import { VERIFIED_LIVE_PRESETS } from '../data/initialData';
+import { getLocalTodayIso } from '../lib/dateTime';
 import {
   buildGmailQueryFromSenders,
   compileIntakeToSearchPrompt,
@@ -335,7 +336,7 @@ export function IntakeModal({
         roleType: track,
         fileName: file.name,
         rawText,
-        uploadedAt: new Date().toISOString().slice(0, 10),
+        uploadedAt: getLocalTodayIso(),
       });
     } catch (err: unknown) {
       setResumeUploadError(

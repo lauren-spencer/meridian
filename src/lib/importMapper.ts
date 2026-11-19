@@ -1,7 +1,8 @@
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import type { ColumnMappingSuggestion, MappableJobField } from '../types/job.ts';
+import { GEMINI_LITE_MODEL, LITE_THINKING_CONFIG } from './geminiModels.ts';
 
-const MODEL_NAME = 'gemini-4-hydrogen';
+const MODEL_NAME = GEMINI_LITE_MODEL;
 
 const VALID_FIELDS: MappableJobField[] = [
   'ignore',
@@ -95,7 +96,7 @@ ${JSON.stringify(input.sampleRows.slice(0, 4), null, 2)}`;
     model: MODEL_NAME,
     contents: prompt,
     config: {
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      thinkingConfig: LITE_THINKING_CONFIG,
       responseMimeType: 'application/json',
       responseSchema: MAPPING_SCHEMA,
     },

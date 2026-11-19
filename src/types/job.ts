@@ -10,7 +10,7 @@ export type LocationType = 'Remote' | 'Hybrid' | 'Onsite';
 
 export type EmploymentType = 'Full-time' | 'Internship' | 'Part-time' | 'Contract';
 
-export type JobPriority = 'high' | 'medium' | 'low';
+export type JobPriority = 'asap' | 'high' | 'medium' | 'low';
 
 export type AtsType =
   | 'Greenhouse'

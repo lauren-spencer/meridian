@@ -20,6 +20,7 @@ import {
   type RichFeedbackItem,
 } from './src/lib/feedbackEngine.ts';
 import { runMeridianChat } from './src/lib/gemini.ts';
+import { formatGeminiApiError } from './src/lib/geminiModels.ts';
 import { scanGmailForJobs } from './src/lib/gmailScanner.ts';
 import { suggestColumnMappingWithGemini } from './src/lib/importMapper.ts';
 import { realtimeHub } from './src/lib/realtimeHub.ts';
@@ -213,6 +214,7 @@ async function startServer() {
       searchPrompt,
       rules,
       recentFeedback,
+      timeZone,
     } = req.body as {
       sources?: JobSource[];
       targetCompanies?: TargetCompany[];
@@ -226,7 +228,15 @@ async function startServer() {
         vote: 'up' | 'down';
         reason?: DislikeReason;
       }[];
+      timeZone?: string;
     };
+
+    const resolvedTz =
+      typeof timeZone === 'string' && timeZone.trim()
+        ? timeZone.trim()
+        : typeof req.headers['x-timezone'] === 'string'
+        ? req.headers['x-timezone'].trim()
+        : undefined;
 
     if (Array.isArray(sources) || Array.isArray(targetCompanies)) {
       realtimeHub.syncWorkspaceContext({
@@ -238,6 +248,7 @@ async function startServer() {
         rules: Array.isArray(rules) ? rules : [],
         recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
         maxNewPerRun: 8,
+        timeZone: resolvedTz,
       });
     }
 
@@ -262,6 +273,7 @@ async function startServer() {
           vote: 'up' | 'down';
           reason?: DislikeReason;
         }[];
+        timeZone?: string;
       };
     };
 
@@ -286,6 +298,10 @@ async function startServer() {
               ? context.recentFeedback
               : [],
             maxNewPerRun: 8,
+            timeZone:
+              typeof context.timeZone === 'string' && context.timeZone.trim()
+                ? context.timeZone.trim()
+                : undefined,
           }
         : undefined,
     });
@@ -321,16 +337,11 @@ async function startServer() {
       res.json(result);
     } catch (error: unknown) {
       console.error('Error in POST /api/chat:', error);
-      const errObj = error as { status?: number; message?: string };
-      const statusCode =
-        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
-          ? errObj.status
-          : 500;
-      res.status(statusCode).json({
-        error:
-          errObj?.message ||
-          'Failed to reach the assistant. Please try again in a moment.',
-      });
+      const { statusCode, message } = formatGeminiApiError(
+        error,
+        'Failed to reach the assistant. Please try again in a moment.'
+      );
+      res.status(statusCode).json({ error: message });
     }
   });
 
@@ -346,6 +357,7 @@ async function startServer() {
         rules,
         recentFeedback,
         maxNewPerRun,
+        timeZone,
       } = req.body as {
         sources?: JobSource[];
         targetCompanies?: TargetCompany[];
@@ -360,6 +372,7 @@ async function startServer() {
           reason?: DislikeReason;
         }[];
         maxNewPerRun?: number;
+        timeZone?: string;
       };
 
       const hasSources = Array.isArray(sources) && sources.length > 0;
@@ -383,6 +396,7 @@ async function startServer() {
           rules: Array.isArray(rules) ? rules : [],
           recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
           maxNewPerRun: typeof maxNewPerRun === 'number' ? maxNewPerRun : 8,
+          timeZone: typeof timeZone === 'string' ? timeZone : undefined,
         },
         'manual'
       );
@@ -390,16 +404,11 @@ async function startServer() {
       res.json(output);
     } catch (error: unknown) {
       console.error('Error in POST /api/agent/run:', error);
-      const errObj = error as { status?: number; message?: string };
-      const statusCode =
-        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
-          ? errObj.status
-          : 500;
-      res.status(statusCode).json({
-        error:
-          errObj?.message ||
-          'Agent run failed while scoring or fetching sources.',
-      });
+      const { statusCode, message } = formatGeminiApiError(
+        error,
+        'Agent run failed while scoring or fetching sources.'
+      );
+      res.status(statusCode).json({ error: message });
     }
   });
 
@@ -432,43 +441,39 @@ async function startServer() {
       res.json({ patches });
     } catch (error: unknown) {
       console.error('Error in POST /api/agent/rescore:', error);
-      const errObj = error as { status?: number; message?: string };
-      const statusCode =
-        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
-          ? errObj.status
-          : 500;
-      res.status(statusCode).json({
-        error: errObj?.message || 'Failed to re-score roles.',
-      });
+      const { statusCode, message } = formatGeminiApiError(
+        error,
+        'Failed to re-score roles.'
+      );
+      res.status(statusCode).json({ error: message });
     }
   });
 
   // Week 3 Stage 2: AI Preference Synthesis from rolling likes/dislikes
   app.post('/api/feedback/synthesize', async (req, res) => {
     try {
-      const { searchPrompt, rules, recentFeedback } = req.body as {
+      const { searchPrompt, rules, recentFeedback, timeZone } = req.body as {
         searchPrompt?: string;
         rules?: { text: string; active: boolean }[];
         recentFeedback?: RichFeedbackItem[];
+        timeZone?: string;
       };
 
       const result = await synthesizePreferencesWithGemini({
         searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
         rules: Array.isArray(rules) ? rules : [],
         recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
+        timeZone: typeof timeZone === 'string' ? timeZone : undefined,
       });
 
       res.json(result);
     } catch (error: unknown) {
       console.error('Error in POST /api/feedback/synthesize:', error);
-      const errObj = error as { status?: number; message?: string };
-      const statusCode =
-        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
-          ? errObj.status
-          : 500;
-      res.status(statusCode).json({
-        error: errObj?.message || 'Failed to synthesize preference rules.',
-      });
+      const { statusCode, message } = formatGeminiApiError(
+        error,
+        'Failed to synthesize preference rules.'
+      );
+      res.status(statusCode).json({ error: message });
     }
   });
 
@@ -491,6 +496,7 @@ async function startServer() {
         searchPrompt,
         rules,
         recentFeedback,
+        timeZone,
       } = req.body as {
         query?: string;
         maxMessages?: number;
@@ -503,6 +509,7 @@ async function startServer() {
           vote: 'up' | 'down';
           reason?: DislikeReason;
         }[];
+        timeZone?: string;
       };
 
       const output = await scanGmailForJobs({
@@ -513,19 +520,17 @@ async function startServer() {
         searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
         rules: Array.isArray(rules) ? rules : [],
         recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
+        timeZone: typeof timeZone === 'string' ? timeZone : undefined,
       });
 
       res.json(output);
     } catch (error: unknown) {
       console.error('Error in POST /api/gmail/scan:', error);
-      const errObj = error as { status?: number; message?: string };
-      const statusCode =
-        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
-          ? errObj.status
-          : 500;
-      res.status(statusCode).json({
-        error: errObj?.message || 'Failed to scan Gmail messages.',
-      });
+      const { statusCode, message } = formatGeminiApiError(
+        error,
+        'Failed to scan Gmail messages.'
+      );
+      res.status(statusCode).json({ error: message });
     }
   });
 
@@ -861,7 +866,7 @@ async function startServer() {
       }
 
       const accessToken = authHeader.slice('Bearer '.length).trim();
-      const { channels, existingHashes, searchPrompt, rules, recentFeedback } =
+      const { channels, existingHashes, searchPrompt, rules, recentFeedback, timeZone } =
         req.body as {
           channels?: string[];
           existingHashes?: string[];
@@ -873,6 +878,7 @@ async function startServer() {
             vote: 'up' | 'down';
             reason?: DislikeReason;
           }[];
+          timeZone?: string;
         };
 
       const output = await scanSlackForJobs({
@@ -882,26 +888,24 @@ async function startServer() {
         searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
         rules: Array.isArray(rules) ? rules : [],
         recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
+        timeZone: typeof timeZone === 'string' ? timeZone : undefined,
       });
 
       res.json(output);
     } catch (error: unknown) {
       console.error('Error in POST /api/slack/scan:', error);
-      const errObj = error as { status?: number; message?: string };
-      const statusCode =
-        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
-          ? errObj.status
-          : 500;
-      res.status(statusCode).json({
-        error: errObj?.message || 'Failed to scan Slack channels.',
-      });
+      const { statusCode, message } = formatGeminiApiError(
+        error,
+        'Failed to scan Slack channels.'
+      );
+      res.status(statusCode).json({ error: message });
     }
   });
 
   // WhatsApp Chat Export / Forwarded Messages Scanner
   app.post('/api/whatsapp/scan', async (req, res) => {
     try {
-      const { rawText, groupName, existingHashes, searchPrompt, rules, recentFeedback } =
+      const { rawText, groupName, existingHashes, searchPrompt, rules, recentFeedback, timeZone } =
         req.body as {
           rawText?: string;
           groupName?: string;
@@ -914,6 +918,7 @@ async function startServer() {
             vote: 'up' | 'down';
             reason?: DislikeReason;
           }[];
+          timeZone?: string;
         };
 
       if (!rawText || typeof rawText !== 'string' || !rawText.trim()) {
@@ -928,6 +933,7 @@ async function startServer() {
         searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
         rules: Array.isArray(rules) ? rules : [],
         recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
+        timeZone: typeof timeZone === 'string' ? timeZone : undefined,
       });
 
       realtimeHub.broadcast('agent:completed', {
@@ -939,14 +945,11 @@ async function startServer() {
       res.json(output);
     } catch (error: unknown) {
       console.error('Error in POST /api/whatsapp/scan:', error);
-      const errObj = error as { status?: number; message?: string };
-      const statusCode =
-        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
-          ? errObj.status
-          : 500;
-      res.status(statusCode).json({
-        error: errObj?.message || 'Failed to extract jobs from WhatsApp messages.',
-      });
+      const { statusCode, message } = formatGeminiApiError(
+        error,
+        'Failed to extract jobs from WhatsApp messages.'
+      );
+      res.status(statusCode).json({ error: message });
     }
   });
 
@@ -1029,10 +1032,11 @@ async function startServer() {
       res.json({ mappings });
     } catch (error: unknown) {
       console.error('Error in POST /api/import/map:', error);
-      const errObj = error as { status?: number; message?: string };
-      res.status(500).json({
-        error: errObj?.message || 'Failed to map uploaded columns.',
-      });
+      const { statusCode, message } = formatGeminiApiError(
+        error,
+        'Failed to map uploaded columns.'
+      );
+      res.status(statusCode).json({ error: message });
     }
   });
 
@@ -1063,17 +1067,18 @@ async function startServer() {
       res.json(result);
     } catch (error: unknown) {
       console.error('Error in POST /api/jobs/fetch-description:', error);
-      const errObj = error as { message?: string };
-      res.status(500).json({
-        error: errObj?.message || 'Could not fetch full job description from the web.',
-      });
+      const { statusCode, message } = formatGeminiApiError(
+        error,
+        'Could not fetch full job description from the web.'
+      );
+      res.status(statusCode).json({ error: message });
     }
   });
 
   // Manually add a single role by entering its job posting URL
   app.post('/api/jobs/from-url', async (req, res) => {
     try {
-      const { jobUrl, searchPrompt, rules, recentFeedback, stage } = req.body as {
+      const { jobUrl, searchPrompt, rules, recentFeedback, stage, timeZone } = req.body as {
         jobUrl?: string;
         searchPrompt?: string;
         rules?: { text: string; active: boolean }[];
@@ -1084,6 +1089,7 @@ async function startServer() {
           reason?: DislikeReason;
         }[];
         stage?: JobRecord['stage'];
+        timeZone?: string;
       };
 
       if (!jobUrl || !jobUrl.trim()) {
@@ -1097,21 +1103,17 @@ async function startServer() {
         rules: Array.isArray(rules) ? rules : [],
         recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
         stage,
+        timeZone: typeof timeZone === 'string' ? timeZone : undefined,
       });
 
       res.json({ job });
     } catch (error: unknown) {
       console.error('Error in POST /api/jobs/from-url:', error);
-      const errObj = error as { status?: number; message?: string };
-      const statusCode =
-        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
-          ? errObj.status
-          : 500;
-      res.status(statusCode).json({
-        error:
-          errObj?.message ||
-          'Could not extract job details from that URL. Verify it is a public posting link.',
-      });
+      const { statusCode, message } = formatGeminiApiError(
+        error,
+        'Could not extract job details from that URL. Verify it is a public posting link.'
+      );
+      res.status(statusCode).json({ error: message });
     }
   });
 
@@ -1125,6 +1127,7 @@ async function startServer() {
         careerExperiences,
         careerContextNotes,
         customInstructions,
+        timeZone,
       } = req.body as {
         job?: Pick<
           JobRecord,
@@ -1144,6 +1147,7 @@ async function startServer() {
         careerExperiences?: CareerExperienceItem[];
         careerContextNotes?: string;
         customInstructions?: string;
+        timeZone?: string;
       };
 
       if (!job || !sample || !sample.rawText?.trim()) {
@@ -1162,6 +1166,7 @@ async function startServer() {
           typeof careerContextNotes === 'string' ? careerContextNotes : '',
         customInstructions:
           typeof customInstructions === 'string' ? customInstructions : undefined,
+        timeZone: typeof timeZone === 'string' ? timeZone : undefined,
       });
 
       const docxBuffer = await buildCoverLetterDocxBuffer(coverLetter);
@@ -1184,14 +1189,11 @@ async function startServer() {
       });
     } catch (error: unknown) {
       console.error('Error in POST /api/cover-letters/generate:', error);
-      const errObj = error as { status?: number; message?: string };
-      const statusCode =
-        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
-          ? errObj.status
-          : 500;
-      res.status(statusCode).json({
-        error: errObj?.message || 'Could not generate cover letter for this job.',
-      });
+      const { statusCode, message } = formatGeminiApiError(
+        error,
+        'Could not generate cover letter for this job.'
+      );
+      res.status(statusCode).json({ error: message });
     }
   });
 
@@ -1211,10 +1213,11 @@ async function startServer() {
       res.json(parsed);
     } catch (error: unknown) {
       console.error('Error in POST /api/resumes/parse:', error);
-      const errObj = error as { status?: number; message?: string };
-      res.status(500).json({
-        error: errObj?.message || 'Could not parse uploaded resume file.',
-      });
+      const { statusCode, message } = formatGeminiApiError(
+        error,
+        'Could not parse uploaded resume file.'
+      );
+      res.status(statusCode).json({ error: message });
     }
   });
 
@@ -1227,6 +1230,7 @@ async function startServer() {
         careerExperiences,
         careerContextNotes,
         customInstructions,
+        timeZone,
       } = req.body as {
         job?: Pick<
           JobRecord,
@@ -1236,6 +1240,7 @@ async function startServer() {
         careerExperiences?: CareerExperienceItem[];
         careerContextNotes?: string;
         customInstructions?: string;
+        timeZone?: string;
       };
 
       if (!job || !baseResume || !baseResume.rawText?.trim()) {
@@ -1253,6 +1258,7 @@ async function startServer() {
           typeof careerContextNotes === 'string' ? careerContextNotes : '',
         customInstructions:
           typeof customInstructions === 'string' ? customInstructions : undefined,
+        timeZone: typeof timeZone === 'string' ? timeZone : undefined,
       });
 
       const redlinedBuffer = await buildTailoredResumeDocxBuffer(tailored, true);
@@ -1267,14 +1273,11 @@ async function startServer() {
       });
     } catch (error: unknown) {
       console.error('Error in POST /api/resumes/tailor:', error);
-      const errObj = error as { status?: number; message?: string };
-      const statusCode =
-        typeof errObj?.status === 'number' && errObj.status >= 400 && errObj.status < 600
-          ? errObj.status
-          : 500;
-      res.status(statusCode).json({
-        error: errObj?.message || 'Could not tailor resume for this job.',
-      });
+      const { statusCode, message } = formatGeminiApiError(
+        error,
+        'Could not tailor resume for this job.'
+      );
+      res.status(statusCode).json({ error: message });
     }
   });
 

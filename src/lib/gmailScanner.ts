@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import {
   detectIsMbaRoleServer,
   enrichIncompleteJobs,
@@ -12,6 +12,8 @@ import type {
   JobRecord,
   LocationType,
 } from '../types/job.ts';
+import { formatIsoDateInTimeZone, formatTimeInTimeZone } from './dateTime.ts';
+import { GEMINI_LITE_MODEL, LITE_THINKING_CONFIG } from './geminiModels.ts';
 
 let cachedClient: GoogleGenAI | null = null;
 
@@ -171,6 +173,7 @@ export interface GmailScanInput {
     vote: 'up' | 'down';
     reason?: DislikeReason;
   }[];
+  timeZone?: string;
 }
 
 export interface GmailScanOutput {
@@ -303,11 +306,8 @@ export async function scanGmailForJobs(input: GmailScanInput): Promise<GmailScan
 
   const messageRefs = Array.isArray(listData.messages) ? listData.messages : [];
   const now = new Date();
-  const discoveredAt = now.toISOString().slice(0, 10);
-  const discoveredTime = now.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const discoveredAt = formatIsoDateInTimeZone(now, input.timeZone);
+  const discoveredTime = formatTimeInTimeZone(now, input.timeZone);
 
   if (messageRefs.length === 0) {
     return {
@@ -364,7 +364,7 @@ export async function scanGmailForJobs(input: GmailScanInput): Promise<GmailScan
 
     const bodyText = extractBodyFromPayload(msg.payload) || msg.snippet || '';
     const msgIsoDate = msg.internalDate
-      ? new Date(Number(msg.internalDate)).toISOString().slice(0, 10)
+      ? formatIsoDateInTimeZone(new Date(Number(msg.internalDate)), input.timeZone)
       : discoveredAt;
 
     return {
@@ -432,12 +432,12 @@ EMAILS TO PARSE:
 ${JSON.stringify(emailDigestPayload)}`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_LITE_MODEL,
     contents: extractionPrompt,
     config: {
       responseMimeType: 'application/json',
       responseSchema: GMAIL_EXTRACTION_SCHEMA,
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      thinkingConfig: LITE_THINKING_CONFIG,
     },
   });
 

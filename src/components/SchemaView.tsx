@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Check, Copy, Database, Download, Lock } from 'lucide-react';
 import firebaseBlueprint from '../../firebase-blueprint.json';
 import { WEEK1_POSTGRES_SCHEMA } from '../data/initialData';
+import { getLocalTodayIso } from '../lib/dateTime';
 import type { JobRecord } from '../types/job';
 
 interface SchemaViewProps {
@@ -198,7 +199,7 @@ export function SchemaView({ isSignedIn, jobs, counts }: SchemaViewProps) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `meridian-pipeline-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `meridian-pipeline-${getLocalTodayIso()}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

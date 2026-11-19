@@ -12,6 +12,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './firebase';
+import { getLocalTodayIso } from './dateTime';
 import { buildGmailQueryFromSenders } from './intakeHelpers';
 import type {
   AtsType,
@@ -110,7 +111,7 @@ function validAts(a: unknown): AtsType {
   return VALID_ATS.includes(a as AtsType) ? (a as AtsType) : 'Custom Markdown';
 }
 
-const VALID_PRIORITIES: JobPriority[] = ['high', 'medium', 'low'];
+const VALID_PRIORITIES: JobPriority[] = ['asap', 'high', 'medium', 'low'];
 
 function validPriority(p: unknown): JobPriority | undefined {
   return VALID_PRIORITIES.includes(p as JobPriority) ? (p as JobPriority) : undefined;
@@ -1160,7 +1161,7 @@ export async function createEventInCloud(uid: string, event: JobEvent): Promise<
   const path = `users/${uid}/events/${id}`;
   const validDate = /^\d{4}-\d{2}-\d{2}$/.test(event.date)
     ? event.date
-    : new Date().toISOString().slice(0, 10);
+    : getLocalTodayIso();
   try {
     await setDoc(doc(db, 'users', uid, 'events', id), {
       id,
@@ -1240,7 +1241,7 @@ export async function upsertRoleResumeInCloud(
   const fileName = clampStr(resume.fileName || 'resume.docx', 200) || 'resume.docx';
   const rawText = clampStr(resume.rawText || ' ', 25000) || ' ';
   const uploadedAt = clampStr(
-    resume.uploadedAt || new Date().toISOString().slice(0, 10),
+    resume.uploadedAt || getLocalTodayIso(),
     32
   );
   try {
@@ -1389,7 +1390,7 @@ export async function upsertCoverLetterSampleInCloud(
   const fileName = clampStr(sample.fileName || 'cover-letter.docx', 200) || 'cover-letter.docx';
   const rawText = clampStr(sample.rawText || ' ', 25000) || ' ';
   const uploadedAt = clampStr(
-    sample.uploadedAt || new Date().toISOString().slice(0, 10),
+    sample.uploadedAt || getLocalTodayIso(),
     32
   );
   try {

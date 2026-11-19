@@ -1,4 +1,4 @@
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import {
   BorderStyle,
   Document,
@@ -13,6 +13,8 @@ import type {
   JobRecord,
   RoleResume,
 } from '../types/job';
+import { formatLongDateInTimeZone } from './dateTime.ts';
+import { GEMINI_WRITER_MODEL, WRITER_THINKING_CONFIG } from './geminiModels.ts';
 
 function getGeminiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -78,6 +80,7 @@ export interface GenerateCoverLetterInput {
   careerContextNotes?: string;
   careerExperiences?: CareerExperienceItem[];
   customInstructions?: string;
+  timeZone?: string;
 }
 
 export async function generateCoverLetterForJob(
@@ -85,11 +88,7 @@ export async function generateCoverLetterForJob(
 ): Promise<GeneratedCoverLetter> {
   const ai = getGeminiClient();
 
-  const todayDisplay = new Date().toLocaleDateString('en-US', {
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-  });
+  const todayDisplay = formatLongDateInTimeZone(new Date(), input.timeZone);
 
   const jobDescriptionBlock = (
     input.job.fullDescription?.trim() || input.job.summary?.trim() || ''
@@ -149,12 +148,12 @@ ${
 }`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_WRITER_MODEL,
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
       responseSchema: COVER_LETTER_SCHEMA,
-      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+      thinkingConfig: WRITER_THINKING_CONFIG,
     },
   });
 

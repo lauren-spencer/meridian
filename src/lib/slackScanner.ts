@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import {
   detectIsMbaRoleServer,
   enrichIncompleteJobs,
@@ -12,8 +12,10 @@ import type {
   JobRecord,
   LocationType,
 } from '../types/job.ts';
+import { formatIsoDateInTimeZone, formatTimeInTimeZone } from './dateTime.ts';
+import { GEMINI_LITE_MODEL, LITE_THINKING_CONFIG } from './geminiModels.ts';
 
-const MODEL_NAME = 'gemini-4-hydrogen';
+const MODEL_NAME = GEMINI_LITE_MODEL;
 
 function getAiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -213,6 +215,7 @@ export interface SlackScanInput {
     vote: 'up' | 'down';
     reason?: DislikeReason;
   }[];
+  timeZone?: string;
 }
 
 export async function scanSlackForJobs(input: SlackScanInput): Promise<{
@@ -291,11 +294,8 @@ export async function scanSlackForJobs(input: SlackScanInput): Promise<{
   }
 
   const now = new Date();
-  const todayIso = now.toISOString().slice(0, 10);
-  const nowTime = now.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const todayIso = formatIsoDateInTimeZone(now, input.timeZone);
+  const nowTime = formatTimeInTimeZone(now, input.timeZone);
 
   if (collectedMessages.length === 0) {
     return {
@@ -360,7 +360,7 @@ ${collectedMessages
     model: MODEL_NAME,
     contents: prompt,
     config: {
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      thinkingConfig: LITE_THINKING_CONFIG,
       responseMimeType: 'application/json',
       responseSchema: SLACK_EXTRACT_SCHEMA,
     },

@@ -1,5 +1,6 @@
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import type { ChatApiResponse, WorkspaceChatContext } from '../types/chat.ts';
+import { GEMINI_LITE_MODEL, LITE_THINKING_CONFIG } from './geminiModels.ts';
 
 let cachedClient: GoogleGenAI | null = null;
 
@@ -156,13 +157,13 @@ export async function runMeridianChat(params: {
     }));
 
   const chat = ai.chats.create({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_LITE_MODEL,
     history: formattedHistory,
     config: {
       systemInstruction: buildSystemInstruction(params.workspaceContext),
       responseMimeType: 'application/json',
       responseSchema: CHAT_RESPONSE_SCHEMA,
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      thinkingConfig: LITE_THINKING_CONFIG,
     },
   });
 

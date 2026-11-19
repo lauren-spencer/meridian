@@ -37,6 +37,7 @@ import {
   selectBestCoverLetterSampleForJob,
   selectBestResumeForJob,
 } from '../lib/resumeClient';
+import { getClientTimeZone, getLocalTodayIso } from '../lib/dateTime';
 import type { JobDetailsUpdatePatch } from '../lib/firestoreStore';
 import {
   CareerExperienceItem,
@@ -207,7 +208,7 @@ function getFollowUpState(
   followUpDate?: string
 ): 'overdue' | 'today' | 'upcoming' | 'none' {
   if (!followUpDate) return 'none';
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = getLocalTodayIso();
   if (followUpDate < todayIso) return 'overdue';
   if (followUpDate === todayIso) return 'today';
   return 'upcoming';
@@ -460,7 +461,7 @@ export function JobDetailDrawer({
   const [coverLetterCopied, setCoverLetterCopied] = useState(false);
 
   // Scheduled events state
-  const [eventDate, setEventDate] = useState('2026-11-24');
+  const [eventDate, setEventDate] = useState(() => getLocalTodayIso());
   const [eventType, setEventType] = useState<'interview' | 'followup'>('interview');
   const [eventLabel, setEventLabel] = useState('');
 
@@ -612,7 +613,7 @@ export function JobDetailDrawer({
     }
   };
 
-  const openEditDetails = () => {
+  const openEditDetails = (focusUrl = false) => {
     setActiveTab('overview');
     setEditTitle(job.title);
     setEditCompany(job.company);
@@ -635,6 +636,11 @@ export function JobDetailDrawer({
     setPopulateError(null);
     setPopulateSuccess(null);
     setIsEditingDetails(true);
+    if (focusUrl) {
+      window.setTimeout(() => {
+        document.getElementById('edit-job-url')?.focus();
+      }, 40);
+    }
   };
 
   const handlePopulateFromUrl = async () => {
@@ -778,7 +784,10 @@ export function JobDetailDrawer({
       employmentType: editEmploymentType,
       isMbaRole: editIsMbaRole,
       priority:
-        editPriority === 'high' || editPriority === 'medium' || editPriority === 'low'
+        editPriority === 'asap' ||
+        editPriority === 'high' ||
+        editPriority === 'medium' ||
+        editPriority === 'low'
           ? editPriority
           : null,
       deadlineAt: editDeadlineAt.trim() || null,
@@ -804,7 +813,7 @@ export function JobDetailDrawer({
     const cleanName = contactName.trim();
     if (!cleanName) return;
 
-    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayIso = getLocalTodayIso();
     const nextContact: NetworkingContact = {
       id: `net-${Date.now()}`,
       name: cleanName,
@@ -834,7 +843,7 @@ export function JobDetailDrawer({
     contactId: string,
     nextStatus: NetworkingContactStatus
   ) => {
-    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayIso = getLocalTodayIso();
     const updated = contacts.map((c) =>
       c.id === contactId
         ? {
@@ -1010,7 +1019,7 @@ export function JobDetailDrawer({
         roleType: inferredTrack,
         fileName: file.name,
         rawText,
-        uploadedAt: new Date().toISOString().slice(0, 10),
+        uploadedAt: getLocalTodayIso(),
       };
       onSaveResume(created);
       setSelectedResumeId(created.id);
@@ -1045,6 +1054,7 @@ export function JobDetailDrawer({
           careerExperiences,
           careerContextNotes,
           customInstructions: tailorFocus.trim() || undefined,
+          timeZone: getClientTimeZone(),
         }),
       });
       const data = (await res.json()) as {
@@ -1119,7 +1129,7 @@ export function JobDetailDrawer({
         roleType,
         fileName: file.name,
         rawText,
-        uploadedAt: new Date().toISOString().slice(0, 10),
+        uploadedAt: getLocalTodayIso(),
       };
       onSaveCoverLetterSample(created);
       setSelectedSampleId(created.id);
@@ -1158,6 +1168,7 @@ export function JobDetailDrawer({
           careerExperiences,
           careerContextNotes,
           customInstructions: coverLetterFocus.trim() || undefined,
+          timeZone: getClientTimeZone(),
         }),
       });
       const data = (await res.json()) as {
@@ -1263,7 +1274,7 @@ export function JobDetailDrawer({
               }`}
             >
               <Pencil className="w-3.5 h-3.5" />
-              <span>{isEditingDetails ? 'Cancel Edit' : 'Edit'}</span>
+              <span>{isEditingDetails ? 'Cancel Edit' : 'Edit Info'}</span>
             </button>
             <button
               type="button"
@@ -1361,47 +1372,47 @@ export function JobDetailDrawer({
                 </select>
               </div>
 
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-medium text-zinc-500">Priority</span>
-                <div
-                  role="group"
-                  aria-label="Role priority"
-                  className="inline-flex items-center bg-zinc-100 p-0.5 rounded-md border border-zinc-200/80"
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor="detail-priority"
+                  className="text-xs font-medium text-zinc-500"
                 >
-                  {(
-                    [
-                      { id: 'high', label: 'High', activeClass: 'bg-red-600 text-white' },
-                      { id: 'medium', label: 'Med', activeClass: 'bg-amber-500 text-white' },
-                      { id: 'low', label: 'Low', activeClass: 'bg-blue-600 text-white' },
-                    ] as const
-                  ).map((opt) => {
-                    const active = job.priority === opt.id;
-                    return (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        aria-pressed={active}
-                        title={
-                          active
-                            ? `Clear ${opt.label} priority`
-                            : `Set ${opt.label} priority`
-                        }
-                        onClick={() =>
-                          onUpdateJobAttributes(job.id, {
-                            priority: active ? null : opt.id,
-                          })
-                        }
-                        className={`px-2 py-1 text-[11px] font-medium rounded transition-colors cursor-pointer ${
-                          active
-                            ? opt.activeClass
-                            : 'text-zinc-600 hover:text-zinc-950 hover:bg-white/70'
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    );
-                  })}
-                </div>
+                  Priority
+                </label>
+                <select
+                  id="detail-priority"
+                  aria-label="Role priority"
+                  value={job.priority ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    onUpdateJobAttributes(job.id, {
+                      priority:
+                        val === 'asap' ||
+                        val === 'high' ||
+                        val === 'medium' ||
+                        val === 'low'
+                          ? val
+                          : null,
+                    });
+                  }}
+                  className={`h-8 px-2.5 text-xs font-medium rounded-md border cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 ${
+                    job.priority === 'asap'
+                      ? 'bg-rose-100/80 text-rose-800 border-rose-300 font-semibold'
+                      : job.priority === 'high'
+                      ? 'bg-red-50/70 text-red-700 border-red-200 font-semibold'
+                      : job.priority === 'medium'
+                      ? 'bg-amber-50/70 text-amber-700 border-amber-200'
+                      : job.priority === 'low'
+                      ? 'bg-blue-50/60 text-blue-700 border-blue-200'
+                      : 'bg-white text-zinc-700 border-zinc-200'
+                  }`}
+                >
+                  <option value="">None</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="asap">ASAP</option>
+                </select>
               </div>
             </div>
 
@@ -1688,9 +1699,10 @@ export function JobDetailDrawer({
                     className="w-full h-8 px-2.5 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
                   >
                     <option value="">No priority</option>
-                    <option value="high">High</option>
-                    <option value="medium">Medium</option>
                     <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="asap">ASAP</option>
                   </select>
                 </div>
 
@@ -1797,109 +1809,156 @@ export function JobDetailDrawer({
           )}
 
           {/* Structured Key Attributes */}
-          <dl className="grid grid-cols-2 gap-y-3.5 gap-x-6 text-xs">
-            <div>
-              <dt className="text-zinc-500">Match Score</dt>
-              <dd className="mt-0.5 font-mono text-sm font-semibold text-zinc-950 tabular-nums">
-                {job.matchScore}%
-              </dd>
-            </div>
-            <div>
-              <dt className="text-zinc-500">Compensation</dt>
-              <dd className="mt-0.5 font-mono text-sm font-medium text-zinc-950 tabular-nums">
-                {job.salaryLabel}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-zinc-500">Location</dt>
-              <dd className="mt-0.5 text-zinc-900">
-                {job.locationType} · {job.location}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-zinc-500">Discovered</dt>
-              <dd className="mt-0.5 font-mono text-zinc-900 tabular-nums">
-                {job.discoveredAt} · {job.discoveredTime}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-zinc-500">Employment Type</dt>
-              <dd className="mt-1">
-                <select
-                  aria-label="Employment type"
-                  value={normalizedEmploymentType}
-                  onChange={(e) =>
-                    onUpdateJobAttributes(job.id, { employmentType: e.target.value })
-                  }
-                  className="h-7 px-2 text-xs font-medium bg-white border border-zinc-200 rounded-md text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
-                >
-                  {EMPLOYMENT_TYPES.map((et) => (
-                    <option key={et} value={et}>
-                      {et}
-                    </option>
-                  ))}
-                </select>
-              </dd>
-            </div>
-            <div>
-              <dt className="text-zinc-500">MBA Role</dt>
-              <dd className="mt-1.5">
-                <label className="inline-flex items-center gap-2 text-xs font-medium text-zinc-900 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={isMbaRole}
-                    onChange={(e) =>
-                      onUpdateJobAttributes(job.id, { isMbaRole: e.target.checked })
-                    }
-                    className="rounded border-zinc-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
-                  />
-                  <span>{isMbaRole ? 'Yes (MBA role)' : 'Mark as MBA role'}</span>
-                </label>
-              </dd>
-            </div>
-            <div>
-              <dt className="text-zinc-500">Application Deadline</dt>
-              <dd className="mt-0.5 font-mono text-zinc-900 tabular-nums">
-                {job.deadlineAt ?? 'Rolling'}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-zinc-500">Source Link</dt>
-              <dd className="mt-0.5 flex flex-wrap items-center gap-2">
-                {job.jobUrl ? (
-                  <>
-                    <a
-                      href={job.jobUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-blue-600 hover:underline"
-                    >
-                      <span>Open posting</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                    {!isEditingDetails && (
-                      <button
-                        type="button"
-                        onClick={openEditDetails}
-                        className="text-[11px] text-zinc-500 hover:text-zinc-900 underline underline-offset-2 cursor-pointer"
-                      >
-                        Edit / Re-pull
-                      </button>
-                    )}
-                  </>
-                ) : (
+          <div className="space-y-3">
+            {!isEditingDetails && (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold text-zinc-900">Role Details</h3>
+                <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={openEditDetails}
-                    className="inline-flex items-center gap-1 text-blue-600 hover:underline font-medium cursor-pointer"
+                    onClick={() => openEditDetails(true)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-[11.5px] font-medium text-blue-700 bg-blue-50/70 hover:bg-blue-100/80 border border-blue-200 rounded-md transition-colors cursor-pointer"
                   >
-                    <Link2 className="w-3 h-3" />
-                    <span>Add URL &amp; Auto-fill</span>
+                    <Sparkles className="w-3 h-3" />
+                    <span>Auto-Populate from URL</span>
                   </button>
-                )}
-              </dd>
-            </div>
-          </dl>
+                  <button
+                    type="button"
+                    onClick={() => openEditDetails(false)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-[11.5px] font-medium text-zinc-700 bg-white hover:bg-zinc-50 border border-zinc-200 rounded-md transition-colors cursor-pointer"
+                  >
+                    <Pencil className="w-3 h-3" />
+                    <span>Edit Fields</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <dl className="grid grid-cols-2 gap-y-3.5 gap-x-6 text-xs">
+              <div>
+                <dt className="text-zinc-500">Match Score</dt>
+                <dd className="mt-0.5 font-mono text-sm font-semibold text-zinc-950 tabular-nums">
+                  {job.matchScore}%
+                </dd>
+              </div>
+              <div>
+                <dt className="text-zinc-500">Compensation</dt>
+                <dd className="mt-0.5 font-mono text-sm font-medium text-zinc-950 tabular-nums">
+                  <button
+                    type="button"
+                    onClick={() => openEditDetails(false)}
+                    title="Click to edit compensation"
+                    className="text-left hover:text-blue-700 hover:underline underline-offset-2 cursor-pointer"
+                  >
+                    {job.salaryLabel}
+                  </button>
+                </dd>
+              </div>
+              <div>
+                <dt className="text-zinc-500">Location</dt>
+                <dd className="mt-0.5 text-zinc-900">
+                  <button
+                    type="button"
+                    onClick={() => openEditDetails(false)}
+                    title="Click to edit location"
+                    className="text-left hover:text-blue-700 hover:underline underline-offset-2 cursor-pointer"
+                  >
+                    {job.locationType} · {job.location}
+                  </button>
+                </dd>
+              </div>
+              <div>
+                <dt className="text-zinc-500">Discovered</dt>
+                <dd className="mt-0.5 font-mono text-zinc-900 tabular-nums">
+                  {job.discoveredAt} · {job.discoveredTime}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-zinc-500">Employment Type</dt>
+                <dd className="mt-1">
+                  <select
+                    aria-label="Employment type"
+                    value={normalizedEmploymentType}
+                    onChange={(e) =>
+                      onUpdateJobAttributes(job.id, { employmentType: e.target.value })
+                    }
+                    className="h-7 px-2 text-xs font-medium bg-white border border-zinc-200 rounded-md text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                  >
+                    {EMPLOYMENT_TYPES.map((et) => (
+                      <option key={et} value={et}>
+                        {et}
+                      </option>
+                    ))}
+                  </select>
+                </dd>
+              </div>
+              <div>
+                <dt className="text-zinc-500">MBA Role</dt>
+                <dd className="mt-1.5">
+                  <label className="inline-flex items-center gap-2 text-xs font-medium text-zinc-900 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={isMbaRole}
+                      onChange={(e) =>
+                        onUpdateJobAttributes(job.id, { isMbaRole: e.target.checked })
+                      }
+                      className="rounded border-zinc-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                    />
+                    <span>{isMbaRole ? 'Yes (MBA role)' : 'Mark as MBA role'}</span>
+                  </label>
+                </dd>
+              </div>
+              <div>
+                <dt className="text-zinc-500">Application Deadline</dt>
+                <dd className="mt-0.5 font-mono text-zinc-900 tabular-nums">
+                  <button
+                    type="button"
+                    onClick={() => openEditDetails(false)}
+                    title="Click to edit application deadline"
+                    className="text-left hover:text-blue-700 hover:underline underline-offset-2 cursor-pointer"
+                  >
+                    {job.deadlineAt ?? 'Rolling'}
+                  </button>
+                </dd>
+              </div>
+              <div>
+                <dt className="text-zinc-500">Source Link</dt>
+                <dd className="mt-0.5 flex flex-wrap items-center gap-2">
+                  {job.jobUrl ? (
+                    <>
+                      <a
+                        href={job.jobUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-blue-600 hover:underline"
+                      >
+                        <span>Open posting</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                      {!isEditingDetails && (
+                        <button
+                          type="button"
+                          onClick={() => openEditDetails(true)}
+                          className="text-[11px] text-zinc-500 hover:text-zinc-900 underline underline-offset-2 cursor-pointer"
+                        >
+                          Edit / Re-pull
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => openEditDetails(true)}
+                      className="inline-flex items-center gap-1 text-blue-600 hover:underline font-medium cursor-pointer"
+                    >
+                      <Link2 className="w-3 h-3" />
+                      <span>Add URL &amp; Auto-fill</span>
+                    </button>
+                  )}
+                </dd>
+              </div>
+            </dl>
+          </div>
 
           {/* Match Rationale */}
           <div className="pt-5 border-t border-zinc-100 space-y-2">

@@ -32,6 +32,7 @@ type SortField = 'matchScore' | 'discoveredAt' | 'salaryMax' | 'company' | 'prio
 type SortDirection = 'asc' | 'desc';
 
 const PRIORITY_RANK: Record<JobPriority, number> = {
+  asap: 4,
   high: 3,
   medium: 2,
   low: 1,
@@ -39,6 +40,8 @@ const PRIORITY_RANK: Record<JobPriority, number> = {
 
 function prioritySelectClass(priority?: JobPriority): string {
   switch (priority) {
+    case 'asap':
+      return 'text-rose-800 font-semibold bg-rose-100/80 border-rose-300 hover:border-rose-400';
     case 'high':
       return 'text-red-700 font-semibold bg-red-50/70 border-red-200 hover:border-red-300';
     case 'medium':
@@ -337,6 +340,7 @@ export function TableView({
             className="h-9 px-2.5 text-xs bg-white border border-zinc-200 rounded-md text-zinc-700 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
           >
             <option value="all">All priorities</option>
+            <option value="asap">ASAP</option>
             <option value="high">High priority</option>
             <option value="medium">Medium priority</option>
             <option value="low">Low priority</option>
@@ -597,7 +601,10 @@ export function TableView({
                             const val = e.target.value;
                             onChangePriority(
                               job.id,
-                              val === 'high' || val === 'medium' || val === 'low'
+                              val === 'asap' ||
+                                val === 'high' ||
+                                val === 'medium' ||
+                                val === 'low'
                                 ? val
                                 : null
                             );
@@ -607,9 +614,10 @@ export function TableView({
                           )}`}
                         >
                           <option value="">—</option>
-                          <option value="high">High</option>
-                          <option value="medium">Medium</option>
                           <option value="low">Low</option>
+                          <option value="medium">Medium</option>
+                          <option value="high">High</option>
+                          <option value="asap">ASAP</option>
                         </select>
                       </td>
 

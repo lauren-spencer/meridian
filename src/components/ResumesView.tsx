@@ -14,6 +14,7 @@ import {
   Unlock,
   Upload,
 } from 'lucide-react';
+import { getLocalTodayIso } from '../lib/dateTime';
 import {
   DEFAULT_RESUME_ROLE_TYPES,
   getCoverLetterUnlockStatus,
@@ -124,7 +125,7 @@ export function ResumesView({
       roleType,
       fileName,
       rawText,
-      uploadedAt: new Date().toISOString().slice(0, 10),
+      uploadedAt: getLocalTodayIso(),
     };
     onSaveResume(next);
   };
@@ -197,7 +198,7 @@ export function ResumesView({
       roleType,
       fileName,
       rawText,
-      uploadedAt: new Date().toISOString().slice(0, 10),
+      uploadedAt: getLocalTodayIso(),
     };
     onSaveCoverLetterSample(next);
   };

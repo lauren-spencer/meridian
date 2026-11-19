@@ -4,6 +4,7 @@ import type {
   MappableJobField,
   PipelineStage,
 } from '../types/job';
+import { formatIsoDateInTimeZone, formatTimeInTimeZone } from './dateTime';
 import { detectIsMbaRole, normalizeEmploymentType } from './resumeClient';
 
 export interface ParsedTabularData {
@@ -286,11 +287,8 @@ export function buildNormalizedJobsFromMapping(params: {
   };
 
   const now = new Date();
-  const todayIso = now.toISOString().slice(0, 10);
-  const nowTime = now.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const todayIso = formatIsoDateInTimeZone(now);
+  const nowTime = formatTimeInTimeZone(now);
 
   const seen = new Set(params.existingHashes);
   const seenCompanyNames = new Set<string>();

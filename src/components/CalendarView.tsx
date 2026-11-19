@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Plus, Trash2 } from 'lucide-react';
+import { getLocalTodayIso } from '../lib/dateTime';
 import { JobEvent, JobRecord } from '../types/job';
 
 interface CalendarViewProps {
@@ -39,10 +40,13 @@ export function CalendarView({
   onAddEvent,
   onDeleteEvent,
 }: CalendarViewProps) {
-  // Default to November 2026 (aligned with current local date 2026-11-18)
-  const [currentYear, setCurrentYear] = useState(2026);
-  const [currentMonth, setCurrentMonth] = useState(10); // 0-indexed: 10 = Nov
-  const [selectedDate, setSelectedDate] = useState('2026-11-18');
+  const todayIso = getLocalTodayIso();
+  const [initialYear, initialMonth] = todayIso.split('-').map(Number);
+  const [currentYear, setCurrentYear] = useState(initialYear || new Date().getFullYear());
+  const [currentMonth, setCurrentMonth] = useState(
+    initialMonth ? initialMonth - 1 : new Date().getMonth()
+  );
+  const [selectedDate, setSelectedDate] = useState(todayIso);
 
   const [showDiscovered, setShowDiscovered] = useState(true);
   const [showDeadlines, setShowDeadlines] = useState(true);
@@ -172,9 +176,11 @@ export function CalendarView({
   };
 
   const handleToday = () => {
-    setCurrentYear(2026);
-    setCurrentMonth(10);
-    setSelectedDate('2026-11-18');
+    const freshToday = getLocalTodayIso();
+    const [y, m] = freshToday.split('-').map(Number);
+    setCurrentYear(y || new Date().getFullYear());
+    setCurrentMonth(m ? m - 1 : new Date().getMonth());
+    setSelectedDate(freshToday);
   };
 
   const selectedEntries = entriesByDate.get(selectedDate) ?? [];
@@ -340,7 +346,7 @@ export function CalendarView({
               }
 
               const dayEntries = entriesByDate.get(cell.iso) ?? [];
-              const isToday = cell.iso === '2026-11-18';
+              const isToday = cell.iso === todayIso;
               const isSelected = cell.iso === selectedDate;
 
               return (

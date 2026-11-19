@@ -1,4 +1,4 @@
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import {
   AlignmentType,
   BorderStyle,
@@ -18,6 +18,13 @@ import type {
   TailoredResumeDiffRun,
   TailoredResumeSection,
 } from '../types/job.ts';
+import { formatTimeInTimeZone } from './dateTime.ts';
+import {
+  GEMINI_LITE_MODEL,
+  GEMINI_WRITER_MODEL,
+  LITE_THINKING_CONFIG,
+  WRITER_THINKING_CONFIG,
+} from './geminiModels.ts';
 
 let cachedClient: GoogleGenAI | null = null;
 
@@ -97,7 +104,7 @@ export async function parseUploadedResume(params: {
   if (lowerName.endsWith('.pdf') || params.mimeType === 'application/pdf') {
     const ai = getGeminiClient();
     const response = await ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
+      model: GEMINI_LITE_MODEL,
       contents: {
         parts: [
           {
@@ -112,7 +119,7 @@ export async function parseUploadedResume(params: {
         ],
       },
       config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        thinkingConfig: LITE_THINKING_CONFIG,
       },
     });
     const text = (response.text ?? '').trim();
@@ -292,6 +299,7 @@ export async function tailorResumeForJob(params: {
   careerExperiences: CareerExperienceItem[];
   careerContextNotes: string;
   customInstructions?: string;
+  timeZone?: string;
 }): Promise<TailoredResumeDocument> {
   const ai = getGeminiClient();
 
@@ -353,13 +361,13 @@ ${brainDumpText}
 Produce the tailored 1-page resume JSON with redline diff runs (edited=true for every edit or addition from extended context).`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_WRITER_MODEL,
     contents: userPrompt,
     config: {
       systemInstruction,
       responseMimeType: 'application/json',
       responseSchema: TAILORED_RESUME_SCHEMA,
-      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+      thinkingConfig: WRITER_THINKING_CONFIG,
     },
   });
 
@@ -431,10 +439,7 @@ Produce the tailored 1-page resume JSON with redline diff runs (edited=true for 
       ? parsed.pulledFromExtendedContext.map((s) => String(s)).filter(Boolean).slice(0, 8)
       : [],
     estimatedLineCount,
-    generatedAt: new Date().toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-    }),
+    generatedAt: formatTimeInTimeZone(new Date(), params.timeZone),
   };
 }
 

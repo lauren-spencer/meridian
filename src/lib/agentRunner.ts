@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import type {
   AgentRunReport,
   AgentSourceRunResult,
@@ -11,6 +11,8 @@ import type {
   LocationType,
   TargetCompany,
 } from '../types/job.ts';
+import { formatIsoDateInTimeZone, formatTimeInTimeZone } from './dateTime.ts';
+import { GEMINI_LITE_MODEL, LITE_THINKING_CONFIG } from './geminiModels.ts';
 
 let cachedClient: GoogleGenAI | null = null;
 
@@ -79,6 +81,7 @@ export interface AgentRunInput {
     reason?: DislikeReason;
   }[];
   maxNewPerRun?: number;
+  timeZone?: string;
 }
 
 export interface AgentRunOutput {
@@ -426,11 +429,11 @@ INSTRUCTIONS:
   }`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_LITE_MODEL,
     contents: prompt,
     config: {
       tools: [{ googleSearch: {} }],
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      thinkingConfig: LITE_THINKING_CONFIG,
     },
   });
 
@@ -613,11 +616,11 @@ INCOMPLETE JOBS TO ENRICH:
 ${JSON.stringify(payload)}`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_LITE_MODEL,
     contents: prompt,
     config: {
       tools: [{ googleSearch: {} }],
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      thinkingConfig: LITE_THINKING_CONFIG,
     },
   });
 
@@ -1062,12 +1065,12 @@ async function fetchCustomMarkdownSource(source: JobSource): Promise<RawScrapedP
   };
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_LITE_MODEL,
     contents: `Extract up to 15 open job postings from this converted Markdown career page (${source.url}). Only include real job listings present on the page, resolving full URLs. If none are found, return an empty array.\n\n${markdown}`,
     config: {
       responseMimeType: 'application/json',
       responseSchema: extractionSchema,
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      thinkingConfig: LITE_THINKING_CONFIG,
     },
   });
 
@@ -1310,12 +1313,12 @@ NEW POSTINGS TO EVALUATE:
 ${JSON.stringify(candidatePayload)}`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_LITE_MODEL,
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
       responseSchema: SCORING_RESPONSE_SCHEMA,
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      thinkingConfig: LITE_THINKING_CONFIG,
     },
   });
 
@@ -1499,11 +1502,8 @@ export async function runAgentPipeline(input: AgentRunInput): Promise<AgentRunOu
   ]);
 
   const now = new Date();
-  const discoveredAt = now.toISOString().slice(0, 10);
-  const discoveredTime = now.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const discoveredAt = formatIsoDateInTimeZone(now, input.timeZone);
+  const discoveredTime = formatTimeInTimeZone(now, input.timeZone);
 
   const newJobs: JobRecord[] = candidatesToScore.map((candidate, idx) => {
     const scored = scoredByHash.get(candidate.urlHash);
@@ -1626,10 +1626,10 @@ export async function fetchFullJobDescriptionFromUrl(
           const compact = htmlToCompactMarkdown(html, parsedUrl.toString(), 14000);
           if (compact.length >= 160) {
             const response = await ai.models.generateContent({
-              model: 'gemini-4-hydrogen',
+              model: GEMINI_LITE_MODEL,
               contents: `Extract the clean, complete job description from this job posting page. Preserve key sections (About the Role, Responsibilities, Qualifications, Compensation & Benefits) in clean plain text with short headings and bullet points (- ). Remove navigation chrome, cookie banners, and unrelated links.\n\nPAGE CONTENT:\n${compact}`,
               config: {
-                thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+                thinkingConfig: LITE_THINKING_CONFIG,
               },
             });
             const text = (response.text || '').trim() || stripHtmlToText(html, 8000);
@@ -1661,7 +1661,7 @@ export async function fetchFullJobDescriptionFromUrl(
   }
 
   const searchResponse = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_LITE_MODEL,
     contents: `Find the official public job posting on the web for this role and extract the complete job description:
 - Role Title: ${title || 'Unknown'}
 - Company: ${company || 'Unknown'}
@@ -1676,7 +1676,7 @@ Respond ONLY with a valid JSON object (no extra text):
 }`,
     config: {
       tools: [{ googleSearch: {} }],
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      thinkingConfig: LITE_THINKING_CONFIG,
     },
   });
 
@@ -1740,6 +1740,7 @@ export async function extractJobFromUrl(input: {
   rules: { text: string; active: boolean }[];
   recentFeedback?: AgentRunInput['recentFeedback'];
   stage?: JobRecord['stage'];
+  timeZone?: string;
 }): Promise<JobRecord> {
   let normalizedUrl = input.jobUrl.trim();
   if (!normalizedUrl) {
@@ -1840,32 +1841,29 @@ Respond ONLY with a valid JSON object matching this exact structure (no markdown
 
   if (pageMarkdown.length >= 220) {
     const response = await ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
+      model: GEMINI_LITE_MODEL,
       contents: `${promptCore}\n\nFETCHED PAGE CONTENT:\n${pageMarkdown}`,
       config: {
         responseMimeType: 'application/json',
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        thinkingConfig: LITE_THINKING_CONFIG,
       },
     });
     extracted = parseJsonFromModelText(response.text ?? '{}', {});
   } else {
     const response = await ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
+      model: GEMINI_LITE_MODEL,
       contents: `Use Google Search to look up the public job posting at ${canonicalUrl} (the page required JS or blocked direct fetch) and extract all available details.\n\n${promptCore}`,
       config: {
         tools: [{ googleSearch: {} }],
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        thinkingConfig: LITE_THINKING_CONFIG,
       },
     });
     extracted = parseJsonFromModelText(response.text ?? '{}', {});
   }
 
   const now = new Date();
-  const discoveredAt = now.toISOString().slice(0, 10);
-  const discoveredTime = now.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  const discoveredAt = formatIsoDateInTimeZone(now, input.timeZone);
+  const discoveredTime = formatTimeInTimeZone(now, input.timeZone);
 
   const fallbackCompany =
     domain

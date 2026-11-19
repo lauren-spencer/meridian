@@ -135,7 +135,7 @@ service cloud.firestore {
     }
 
     function isValidPriority(val) {
-      return val in ['high', 'medium', 'low'];
+      return val in ['asap', 'high', 'medium', 'low'];
     }
 
     function isValidJob(data, userId, jobId) {

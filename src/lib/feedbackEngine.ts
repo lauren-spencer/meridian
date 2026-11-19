@@ -1,10 +1,12 @@
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import type {
   AiRuleSuggestion,
   DislikeReason,
   JobRecord,
   PreferenceSynthesisResult,
 } from '../types/job.ts';
+import { formatTimeInTimeZone } from './dateTime.ts';
+import { GEMINI_LITE_MODEL, LITE_THINKING_CONFIG } from './geminiModels.ts';
 
 let cachedClient: GoogleGenAI | null = null;
 
@@ -121,12 +123,12 @@ JOBS TO RE-SCORE:
 ${JSON.stringify(input.jobs.slice(0, 20))}`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_LITE_MODEL,
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
       responseSchema: RESCORE_SCHEMA,
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      thinkingConfig: LITE_THINKING_CONFIG,
     },
   });
 
@@ -144,6 +146,7 @@ export interface SynthesizeFeedbackInput {
   searchPrompt: string;
   rules: { text: string; active: boolean }[];
   recentFeedback: RichFeedbackItem[];
+  timeZone?: string;
 }
 
 const SYNTHESIS_SCHEMA = {
@@ -216,12 +219,12 @@ INSTRUCTIONS:
 2. Propose 1 to 3 genuinely new, specific, non-duplicate filter rules in "suggestions" based on clear patterns in the feedback (especially recurring dislikes or strong positive signals). If there is very little feedback, return 1 helpful refinement suggestion.`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_LITE_MODEL,
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
       responseSchema: SYNTHESIS_SCHEMA,
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      thinkingConfig: LITE_THINKING_CONFIG,
     },
   });
 
@@ -252,10 +255,7 @@ INSTRUCTIONS:
       dismissed: false,
     }));
 
-  const nowTime = new Date().toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const nowTime = formatTimeInTimeZone(new Date(), input.timeZone);
 
   return {
     preferenceSummary:
