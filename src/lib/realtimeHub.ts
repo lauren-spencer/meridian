@@ -112,7 +112,9 @@ class RealtimeAgentHub {
   private async runScheduledTick(): Promise<void> {
     if (!this.latestContext || this.isRunning) return;
     const enabledCount = this.latestContext.sources.filter((s) => s.enabled).length;
-    if (enabledCount === 0) return;
+    const enabledCompanies = (this.latestContext.targetCompanies ?? []).filter((c) => c.enabled).length;
+    const incompleteCount = (this.latestContext.incompleteJobs ?? []).length;
+    if (enabledCount === 0 && enabledCompanies === 0 && incompleteCount === 0) return;
 
     try {
       await this.executeRun(this.latestContext, 'scheduled');
@@ -136,7 +138,9 @@ class RealtimeAgentHub {
     this.isRunning = true;
     this.broadcast('agent:started', {
       trigger,
-      sourceCount: input.sources.filter((s) => s.enabled).length,
+      sourceCount:
+        input.sources.filter((s) => s.enabled).length +
+        (input.targetCompanies ?? []).filter((c) => c.enabled).length,
     });
     this.broadcast('schedule:updated', this.getScheduleState());
 
@@ -156,6 +160,8 @@ class RealtimeAgentHub {
       this.broadcast('agent:completed', {
         trigger,
         newJobs: output.newJobs,
+        enrichedJobs: output.enrichedJobs,
+        checkedCompanyIds: output.checkedCompanyIds,
         runReport: output.runReport,
       });
 

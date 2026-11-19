@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { GripVertical, ThumbsDown, ThumbsUp } from 'lucide-react';
+import { GripVertical, ThumbsDown, ThumbsUp, Trash2, X } from 'lucide-react';
 import { DislikeReason, JobRecord, PipelineStage } from '../types/job';
 import { DislikeReasonPopover } from './DislikeReasonPopover';
 
@@ -9,6 +9,7 @@ interface KanbanViewProps {
   onMoveStage: (jobId: string, nextStage: PipelineStage) => void;
   onThumbsUp: (jobId: string) => void;
   onThumbsDown: (jobId: string, reason?: DislikeReason) => void;
+  onDeleteJob: (jobId: string) => void;
 }
 
 const COLUMNS: {
@@ -29,10 +30,12 @@ export function KanbanView({
   onMoveStage,
   onThumbsUp,
   onThumbsDown,
+  onDeleteJob,
 }: KanbanViewProps) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<PipelineStage | null>(null);
   const [openDislikeId, setOpenDislikeId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const handleDragStart = (e: React.DragEvent, jobId: string) => {
     setDraggingId(jobId);
@@ -150,10 +153,49 @@ export function KanbanView({
                           )}
                           <span className="font-medium text-zinc-700 truncate">{job.company}</span>
                         </div>
-                        <GripVertical
-                          className="w-3.5 h-3.5 text-zinc-300 group-hover:text-zinc-500 shrink-0 cursor-grab active:cursor-grabbing"
-                          aria-hidden="true"
-                        />
+                        <div
+                          className="flex items-center gap-1 shrink-0"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {confirmDeleteId === job.id ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setConfirmDeleteId(null);
+                                  onDeleteJob(job.id);
+                                }}
+                                className="px-1.5 py-0.5 text-[10.5px] font-medium text-white bg-red-600 hover:bg-red-700 rounded cursor-pointer"
+                              >
+                                Delete
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteId(null)}
+                                aria-label="Cancel delete"
+                                className="p-0.5 text-zinc-400 hover:text-zinc-800 rounded cursor-pointer"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteId(job.id)}
+                                aria-label={`Delete ${job.title}`}
+                                title="Delete role"
+                                className="p-0.5 text-zinc-300 opacity-0 group-hover:opacity-100 hover:text-red-600 rounded transition-opacity cursor-pointer"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                              <GripVertical
+                                className="w-3.5 h-3.5 text-zinc-300 group-hover:text-zinc-500 cursor-grab active:cursor-grabbing"
+                                aria-hidden="true"
+                              />
+                            </>
+                          )}
+                        </div>
                       </div>
 
                       {/* Primary title */}

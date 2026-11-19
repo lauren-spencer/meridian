@@ -4,13 +4,16 @@ import {
   ArrowLeft,
   ArrowRight,
   Briefcase,
+  Building2,
   Check,
   CheckCircle2,
   Clock,
+  Copy,
   Database,
   FileText,
   Globe,
   Hash,
+  Info,
   Mail,
   MessageCircle,
   Plus,
@@ -65,12 +68,14 @@ interface IntakeModalProps {
   initialAutoScheduleMinutes: number;
   sources: JobSource[];
   importedCountInSession: number;
+  targetCompaniesCount: number;
   onSignInAccount: (includeGmailScope: boolean) => Promise<void>;
   onConnectGmail: () => Promise<void>;
   onConnectSlack: () => void;
   onSaveResume: (resume: RoleResume) => void;
   onDeleteResume: (resumeId: string) => void;
   onOpenImportModal: () => void;
+  onOpenTargetCompaniesImport: () => void;
   onUploadWhatsAppInIntake: (rawText: string, groupName: string) => Promise<number>;
   onClose: () => void;
   onCompleteIntake: (params: {
@@ -105,12 +110,14 @@ export function IntakeModal({
   initialAutoScheduleMinutes,
   sources,
   importedCountInSession,
+  targetCompaniesCount,
   onSignInAccount,
   onConnectGmail,
   onConnectSlack,
   onSaveResume,
   onDeleteResume,
   onOpenImportModal,
+  onOpenTargetCompaniesImport,
   onUploadWhatsAppInIntake,
   onClose,
   onCompleteIntake,
@@ -159,7 +166,7 @@ export function IntakeModal({
     return match ? match.id : '4h';
   });
 
-  // Dynamic Gmail alert senders (fully customizable, not tied to Kellogg/12twenty)
+  // Dynamic Gmail alert senders (defaults to LinkedIn only; fully customizable)
   const [gmailSenders, setGmailSenders] = useState<string[]>(
     initialProfile.gmailSenders
   );
@@ -171,6 +178,8 @@ export function IntakeModal({
   );
   const [slackChannelInput, setSlackChannelInput] = useState('');
   const [showSlackDetails, setShowSlackDetails] = useState(false);
+  const [slackConnectAttempted, setSlackConnectAttempted] = useState(false);
+  const [copiedSlackUrl, setCopiedSlackUrl] = useState(false);
 
   // WhatsApp groups + optional quick upload
   const [whatsappGroups, setWhatsappGroups] = useState<string[]>(
@@ -579,6 +588,37 @@ export function IntakeModal({
                 </p>
               </div>
 
+              {/* Pacing & "Edit Anytime" Site Map Notice */}
+              <div className="p-3.5 bg-zinc-50 border border-zinc-200 rounded-lg flex items-start gap-2.5 text-xs text-zinc-600">
+                <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                <div className="space-y-1.5 leading-relaxed">
+                  <p className="text-zinc-800">
+                    <strong className="font-semibold text-zinc-950">
+                      Heads up — initial setup can take a few minutes.
+                    </strong>{' '}
+                    Every step in this wizard is optional, and you can skip ahead or update any section anytime later:
+                  </p>
+                  <ul className="space-y-0.5 text-[11.5px] text-zinc-600 list-disc pl-4">
+                    <li>
+                      <strong className="font-medium text-zinc-800">Target roles, locations &amp; criteria:</strong>{' '}
+                      Left sidebar → <span className="font-medium text-zinc-900">Preferences</span> (or reopen <span className="font-medium text-zinc-900">Setup Wizard</span>)
+                    </li>
+                    <li>
+                      <strong className="font-medium text-zinc-800">Resumes &amp; off-resume experience:</strong>{' '}
+                      Left sidebar → <span className="font-medium text-zinc-900">Resumes &amp; Context</span>
+                    </li>
+                    <li>
+                      <strong className="font-medium text-zinc-800">Gmail alerts, Slack, WhatsApp, ATS boards &amp; Target Companies:</strong>{' '}
+                      Left sidebar → <span className="font-medium text-zinc-900">Sources</span>
+                    </li>
+                    <li>
+                      <strong className="font-medium text-zinc-800">Upload existing roles or Target Companies CSV:</strong>{' '}
+                      Top bar → <span className="font-medium text-zinc-900">Import Roles</span> or <span className="font-medium text-zinc-900">Sources</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+
               {/* Role Types */}
               <div className="space-y-2">
                 <label className="block text-xs font-semibold text-zinc-900">
@@ -806,7 +846,7 @@ export function IntakeModal({
                   Upload role resumes &amp; share your full experience
                 </h2>
                 <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
-                  Upload one base resume per role track (e.g., PM, PMM, Strategy) and share roles, projects, or metrics that aren&apos;t on your resume. When you tailor a resume in any job&apos;s sidebar, Meridian pulls relevant off-resume details and outputs a 1-page <span className="font-mono">.docx</span> with edits in red.
+                  Optional — you can skip this for now and upload or edit anytime under <strong className="font-medium text-zinc-700">Resumes &amp; Context</strong> in the left sidebar. Please upload resumes as <span className="font-mono text-zinc-800">.docx</span> files (PDFs take noticeably longer to process).
                 </p>
               </div>
 
@@ -816,7 +856,7 @@ export function IntakeModal({
                   <div className="flex items-center gap-2">
                     <FileText className="w-4 h-4 text-blue-600 shrink-0" />
                     <span className="text-sm font-semibold text-zinc-950">
-                      Base Resumes (1 per Role Type)
+                      Base Resumes (1 per Role Type · .docx Recommended)
                     </span>
                   </div>
                   <span className="text-[11px] font-mono text-zinc-400">
@@ -843,17 +883,20 @@ export function IntakeModal({
                     <span>
                       {isParsingResume
                         ? 'Parsing resume...'
-                        : 'Upload .docx, .pdf, or .txt'}
+                        : 'Upload .docx Resume'}
                     </span>
                     <input
                       type="file"
-                      accept=".docx,.pdf,.txt,.md"
+                      accept=".docx,.txt,.md,.pdf"
                       disabled={isParsingResume}
                       onChange={(e) => void handleIntakeResumeFile(e)}
                       className="sr-only"
                     />
                   </label>
                 </div>
+                <p className="text-[11px] text-zinc-500">
+                  Upload a <span className="font-mono text-zinc-700">.docx</span> file for the fastest upload — PDF parsing can take much longer.
+                </p>
 
                 {resumeUploadError && (
                   <div className="p-2.5 bg-red-50 border border-red-200 rounded-md flex items-start gap-2 text-xs text-red-700">
@@ -1182,50 +1225,99 @@ export function IntakeModal({
                     </span>
                   ) : (
                     <div className="flex items-center gap-2 shrink-0">
+                      {slackConfigured && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSlackConnectAttempted(true);
+                            onConnectSlack();
+                          }}
+                          className="px-3 py-1.5 text-xs font-medium text-white bg-zinc-900 hover:bg-zinc-800 rounded-md whitespace-nowrap cursor-pointer"
+                        >
+                          Connect Slack
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={() => {
-                          if (slackConfigured) {
-                            onConnectSlack();
-                          } else {
-                            setShowSlackDetails((v) => !v);
-                          }
-                        }}
-                        className="px-3 py-1.5 text-xs font-medium text-zinc-800 bg-white border border-zinc-300 hover:bg-zinc-50 rounded-md whitespace-nowrap cursor-pointer"
+                        onClick={() => setShowSlackDetails((v) => !v)}
+                        className="px-3 py-1.5 text-xs font-medium text-zinc-700 bg-white border border-zinc-300 hover:bg-zinc-50 rounded-md whitespace-nowrap cursor-pointer"
                       >
-                        {slackConfigured ? 'Connect Slack' : 'Slack Setup Details'}
+                        {showSlackDetails ? 'Hide Steps' : 'How to Set Up Slack'}
                       </button>
                     </div>
                   )}
                 </div>
 
-                {slackError && (
+                {slackConnectAttempted && slackError && (
                   <div className="p-2.5 bg-red-50 border border-red-200 rounded-md flex items-start gap-2 text-xs text-red-700">
                     <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                     <span>{slackError}</span>
                   </div>
                 )}
 
-                {(!slackConfigured || showSlackDetails) && !slackConnected && (
-                  <div className="p-3 bg-zinc-50 border border-zinc-200 rounded-md text-[11.5px] text-zinc-600 space-y-1.5">
+                {showSlackDetails && !slackConnected && (
+                  <div className="p-3.5 bg-zinc-50 border border-zinc-200 rounded-md text-[11.5px] text-zinc-600 space-y-2">
                     <div className="font-semibold text-zinc-900">
-                      Slack OAuth Checklist
+                      Step-by-step: How to connect Slack
                     </div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono">
-                      <span className={slackHasClientId ? 'text-emerald-700' : 'text-amber-700'}>
-                        SLACK_CLIENT_ID: {slackHasClientId ? 'Detected' : 'Missing'}
-                      </span>
-                      <span className={slackHasClientSecret ? 'text-emerald-700' : 'text-amber-700'}>
-                        SLACK_CLIENT_SECRET: {slackHasClientSecret ? 'Detected' : 'Missing'}
-                      </span>
-                    </div>
-                    <p>
-                      Register this Redirect URL under <strong>OAuth &amp; Permissions</strong> and add User Token Scopes{' '}
-                      <code className="font-mono text-zinc-800">channels:read, channels:history, groups:read, groups:history</code>:
-                    </p>
-                    <div className="font-mono text-[11px] bg-white border border-zinc-200 rounded px-2 py-1 text-zinc-800 break-all select-all">
-                      {slackRedirectUri || `${window.location.origin}/api/slack/callback`}
-                    </div>
+                    <ol className="list-decimal pl-4 space-y-1.5 leading-relaxed">
+                      <li>
+                        Visit{' '}
+                        <a
+                          href="https://api.slack.com/apps"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-blue-600 hover:underline font-medium"
+                        >
+                          api.slack.com/apps
+                        </a>{' '}
+                        and click <strong>Create New App</strong> → <strong>From scratch</strong>, then pick your workspace.
+                      </li>
+                      <li>
+                        Open <strong>OAuth &amp; Permissions</strong> in the left sidebar and add this Redirect URL:
+                        <div className="mt-1 flex items-center gap-1.5">
+                          <div className="flex-1 font-mono text-[11px] bg-white border border-zinc-200 rounded px-2 py-1 text-zinc-800 break-all select-all">
+                            {slackRedirectUri || `${window.location.origin}/api/slack/callback`}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const target =
+                                slackRedirectUri || `${window.location.origin}/api/slack/callback`;
+                              void navigator.clipboard?.writeText(target);
+                              setCopiedSlackUrl(true);
+                              window.setTimeout(() => setCopiedSlackUrl(false), 1800);
+                            }}
+                            title="Copy Redirect URL"
+                            className="p-1.5 bg-white border border-zinc-200 hover:bg-zinc-100 rounded text-zinc-600 cursor-pointer shrink-0"
+                          >
+                            {copiedSlackUrl ? (
+                              <Check className="w-3.5 h-3.5 text-emerald-600" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        </div>
+                      </li>
+                      <li>
+                        Scroll to <strong>User Token Scopes</strong> and add{' '}
+                        <code className="font-mono text-zinc-800">channels:read</code>,{' '}
+                        <code className="font-mono text-zinc-800">channels:history</code>,{' '}
+                        <code className="font-mono text-zinc-800">groups:read</code>, and{' '}
+                        <code className="font-mono text-zinc-800">groups:history</code>.
+                      </li>
+                      <li>
+                        Copy your <strong>Client ID</strong> and <strong>Client Secret</strong> from <strong>Basic Information</strong> into your app environment variables (<code className="font-mono text-zinc-800">SLACK_CLIENT_ID</code> and <code className="font-mono text-zinc-800">SLACK_CLIENT_SECRET</code>).
+                        {slackHasClientId && slackHasClientSecret && (
+                          <span className="ml-1 text-emerald-700 font-medium">
+                            (Already configured!)
+                          </span>
+                        )}
+                      </li>
+                      <li>
+                        You can finish this anytime later — just open <strong>Sources</strong> in the left sidebar and click <strong>Connect Slack</strong>.
+                      </li>
+                    </ol>
                   </div>
                 )}
 
@@ -1493,7 +1585,7 @@ export function IntakeModal({
                     <span>Upload &amp; Map Existing Roles (CSV / JSON)</span>
                   </div>
                   <p className="text-xs text-zinc-500 leading-relaxed max-w-md">
-                    Automatically maps your spreadsheet headers (title, company, salary, link, stage, deadline, notes) into your workspace database and deduplicates against newly pulled roles.
+                    Maps your spreadsheet headers into Meridian&apos;s database. Any rows with a company but blank role title can automatically be added to your Target Companies Watchlist.
                   </p>
                   {importedCountInSession > 0 && (
                     <div className="text-xs font-medium text-emerald-700 pt-1">
@@ -1509,6 +1601,32 @@ export function IntakeModal({
                 >
                   <Upload className="w-3.5 h-3.5" />
                   <span>Upload &amp; Map Roles</span>
+                </button>
+              </div>
+
+              <div className="p-5 border border-zinc-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="text-sm font-semibold text-zinc-950 flex items-center gap-2">
+                    <Building2 className="w-4 h-4 text-blue-600" />
+                    <span>Upload Target Companies Watchlist (CSV)</span>
+                  </div>
+                  <p className="text-xs text-zinc-500 leading-relaxed max-w-md">
+                    Have dream companies where your ideal role hasn&apos;t opened yet? Upload a CSV of company names so Meridian watches them for your target roles on every pull.
+                  </p>
+                  {targetCompaniesCount > 0 && (
+                    <div className="text-xs font-medium text-emerald-700 pt-1">
+                      Watching {targetCompaniesCount} target{' '}
+                      {targetCompaniesCount === 1 ? 'company' : 'companies'}.
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={onOpenTargetCompaniesImport}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-zinc-900 bg-white border border-zinc-300 hover:bg-zinc-50 rounded-md whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Upload Companies CSV</span>
                 </button>
               </div>
 
@@ -1544,9 +1662,10 @@ export function IntakeModal({
                     </span>
                   </div>
                   <div>
-                    <span className="text-zinc-400">Channels: </span>
+                    <span className="text-zinc-400">Channels &amp; Watchlist: </span>
                     <span className="text-zinc-900 font-medium">
                       {selectedUrls.length} ATS boards
+                      {targetCompaniesCount > 0 ? ` · ${targetCompaniesCount} target companies` : ''}
                       {gmailConnected ? ` · Gmail (${gmailSenders.length} senders)` : ''}
                       {slackConnected ? ` · Slack` : ''}
                       {whatsappGroups.length > 0 ? ` · WhatsApp` : ''}

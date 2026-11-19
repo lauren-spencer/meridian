@@ -209,7 +209,7 @@ export function ResumesView({
                 Base Resumes by Role Type
               </h2>
               <p className="text-xs text-zinc-500">
-                Upload one resume per role track (.docx, .pdf, or .txt). Uploading again for the same track replaces it cleanly.
+                Please upload your resume as a <span className="font-mono text-zinc-700">.docx</span> file (PDFs take noticeably longer to parse). Uploading again for the same track replaces it cleanly.
               </p>
             </div>
           </div>
@@ -263,10 +263,10 @@ export function ResumesView({
               <div className="sm:col-span-4 flex items-center gap-2">
                 <label className="flex-1 inline-flex items-center justify-center gap-1.5 h-9 px-3 text-xs font-medium text-white bg-zinc-900 hover:bg-zinc-800 rounded-md cursor-pointer whitespace-nowrap">
                   <Upload className="w-3.5 h-3.5" />
-                  <span>{isParsingFile ? 'Reading file...' : 'Upload .docx / .pdf'}</span>
+                  <span>{isParsingFile ? 'Reading file...' : 'Upload .docx Resume'}</span>
                   <input
                     type="file"
-                    accept=".docx,.pdf,.txt,.md"
+                    accept=".docx,.txt,.md,.pdf"
                     disabled={isParsingFile}
                     onChange={(e) => void handleFileChange(e)}
                     className="sr-only"
@@ -281,6 +281,9 @@ export function ResumesView({
                 </button>
               </div>
             </div>
+            <p className="text-[11px] text-zinc-500">
+              Recommended: <span className="font-mono text-zinc-700">.docx</span> for fast parsing (PDF files take longer to extract).
+            </p>
 
             {uploadError && (
               <div className="p-2.5 bg-red-50 border border-red-200 rounded-md flex items-start gap-2 text-xs text-red-700">

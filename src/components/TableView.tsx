@@ -1,11 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import {
   ArrowUpDown,
+  Building2,
   RefreshCw,
   Search,
   ThumbsDown,
   ThumbsUp,
+  Trash2,
   RotateCcw,
+  X,
 } from 'lucide-react';
 import {
   DislikeReason,
@@ -29,6 +32,8 @@ interface TableViewProps {
   onThumbsUp: (jobId: string) => void;
   onThumbsDown: (jobId: string, reason?: DislikeReason) => void;
   onRestoreJob: (jobId: string) => void;
+  onDeleteJob: (jobId: string) => void;
+  onMoveUntitledToTargetCompanies?: () => void;
   onRunAgent: () => void;
   onRescoreActiveJobs: () => void;
   initialTab?: TableTab;
@@ -67,6 +72,8 @@ export function TableView({
   onThumbsUp,
   onThumbsDown,
   onRestoreJob,
+  onDeleteJob,
+  onMoveUntitledToTargetCompanies,
   onRunAgent,
   onRescoreActiveJobs,
   initialTab = 'active',
@@ -78,12 +85,19 @@ export function TableView({
   const [sortField, setSortField] = useState<SortField>('discoveredAt');
   const [sortDir, setSortDir] = useState<SortDirection>('desc');
   const [openDislikeId, setOpenDislikeId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const counts = useMemo(() => {
     const newCount = jobs.filter((j) => j.isNew && j.stage !== 'archived').length;
     const activeCount = jobs.filter((j) => j.stage !== 'archived').length;
     const archivedCount = jobs.filter((j) => j.stage === 'archived').length;
-    return { newCount, activeCount, allCount: jobs.length, archivedCount };
+    const untitledCount = jobs.filter((j) => {
+      if (j.stage === 'archived') return false;
+      const t = (j.title || '').trim().toLowerCase();
+      const c = (j.company || '').trim().toLowerCase();
+      return (!t || t === 'untitled role' || t === 'untitled') && Boolean(c) && c !== 'unknown company';
+    }).length;
+    return { newCount, activeCount, allCount: jobs.length, archivedCount, untitledCount };
   }, [jobs]);
 
   const filteredJobs = useMemo(() => {
@@ -95,7 +109,13 @@ export function TableView({
         if (tab === 'active' && job.stage === 'archived') return false;
         if (tab === 'archived' && job.stage !== 'archived') return false;
         if (locationFilter !== 'all' && job.locationType !== locationFilter) return false;
-        if (sourceFilter !== 'all' && job.sourceId !== sourceFilter) return false;
+        if (sourceFilter !== 'all') {
+          if (sourceFilter === 'target-company') {
+            if (job.atsType !== 'Target Company') return false;
+          } else if (job.sourceId !== sourceFilter) {
+            return false;
+          }
+        }
         if (q) {
           const haystack = `${job.title} ${job.company} ${job.location} ${job.skills.join(' ')} ${job.sourceName}`.toLowerCase();
           if (!haystack.includes(q)) return false;
@@ -232,6 +252,7 @@ export function TableView({
             <option value="src-slack">Slack Channels</option>
             <option value="src-whatsapp">WhatsApp Groups</option>
             <option value="src-csv-import">Uploaded CSV / JSON</option>
+            <option value="target-company">Target Companies Watchlist</option>
             {sources.map((src) => (
               <option key={src.id} value={src.id}>
                 {src.name}
@@ -251,6 +272,29 @@ export function TableView({
           </button>
         </div>
       </div>
+
+      {/* Untitled Role -> Target Companies Watchlist Helper Banner */}
+      {counts.untitledCount > 0 && onMoveUntitledToTargetCompanies && (
+        <div className="px-4 py-3 bg-blue-50/60 border border-blue-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5 text-xs text-zinc-700">
+            <Building2 className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+            <p className="leading-relaxed">
+              <strong className="font-semibold text-zinc-950">
+                {counts.untitledCount} {counts.untitledCount === 1 ? 'row has' : 'rows have'} &ldquo;Untitled Role&rdquo;
+              </strong>{' '}
+              — if these are target companies you want Meridian to watch for your desired roles, move them to your Target Companies Watchlist in one click (or run the agent to search for open roles &amp; fill missing fields).
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onMoveUntitledToTargetCompanies}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md whitespace-nowrap shrink-0 cursor-pointer self-start sm:self-center"
+          >
+            <Building2 className="w-3.5 h-3.5" />
+            <span>Move to Target Companies</span>
+          </button>
+        </div>
+      )}
 
       {/* High-density data grid */}
       <div className="bg-white border border-zinc-200 rounded-lg overflow-hidden">
@@ -308,7 +352,7 @@ export function TableView({
               {isAgentRunning && (
                 <tr className="bg-blue-50/30 animate-pulse">
                   <td colSpan={8} className="py-3 px-4 text-xs text-blue-700">
-                    Scanning configured ATS feeds and deduplicating unseen postings...
+                    Scanning configured ATS feeds, checking Target Companies, and enriching incomplete role details...
                   </td>
                 </tr>
               )}
@@ -462,21 +506,53 @@ export function TableView({
                         {formatShortDate(job.discoveredAt)}
                       </td>
 
-                      {/* Triage actions */}
+                      {/* Triage & Delete actions */}
                       <td
                         className="py-3 pl-3 pr-4 text-right whitespace-nowrap align-middle relative"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        {job.stage === 'archived' ? (
-                          <button
-                            type="button"
-                            onClick={() => onRestoreJob(job.id)}
-                            className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-zinc-600 hover:text-zinc-950 hover:bg-zinc-100 rounded-md transition-colors cursor-pointer"
-                            title="Restore role to Saved"
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                            <span>Restore</span>
-                          </button>
+                        {confirmDeleteId === job.id ? (
+                          <div className="inline-flex items-center justify-end gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setConfirmDeleteId(null);
+                                onDeleteJob(job.id);
+                              }}
+                              className="px-2 py-1 text-[11px] font-medium text-white bg-red-600 hover:bg-red-700 rounded cursor-pointer"
+                            >
+                              Delete
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteId(null)}
+                              aria-label="Cancel delete"
+                              className="p-1 text-zinc-400 hover:text-zinc-800 rounded cursor-pointer"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ) : job.stage === 'archived' ? (
+                          <div className="inline-flex items-center justify-end gap-1">
+                            <button
+                              type="button"
+                              onClick={() => onRestoreJob(job.id)}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-zinc-600 hover:text-zinc-950 hover:bg-zinc-100 rounded-md transition-colors cursor-pointer"
+                              title="Restore role to Saved"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                              <span>Restore</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteId(job.id)}
+                              aria-label={`Delete ${job.title} at ${job.company}`}
+                              title="Permanently delete role"
+                              className="p-1.5 text-zinc-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         ) : (
                           <div className="inline-flex items-center justify-end gap-1">
                             <button
@@ -524,6 +600,19 @@ export function TableView({
                                 />
                               )}
                             </div>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenDislikeId(null);
+                                setConfirmDeleteId(job.id);
+                              }}
+                              aria-label={`Delete ${job.title} at ${job.company}`}
+                              title="Delete role"
+                              className="p-1.5 text-zinc-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         )}
                       </td>

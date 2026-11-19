@@ -249,13 +249,21 @@ function parseSalaryBounds(label: string): { min: number | null; max: number | n
   };
 }
 
+export interface ParsedTargetCompanyRow {
+  name: string;
+  careersUrl?: string;
+  notes?: string;
+}
+
 export function buildNormalizedJobsFromMapping(params: {
   rows: Record<string, string>[];
   mapping: Record<string, MappableJobField>;
   existingHashes: Set<string>;
   fileName: string;
+  extractUntitledAsTargetCompanies?: boolean;
 }): {
   jobs: JobRecord[];
+  extractedTargetCompanies: ParsedTargetCompanyRow[];
   skippedDuplicates: number;
   skippedInvalid: number;
 } {
@@ -284,7 +292,9 @@ export function buildNormalizedJobsFromMapping(params: {
   });
 
   const seen = new Set(params.existingHashes);
+  const seenCompanyNames = new Set<string>();
   const jobs: JobRecord[] = [];
+  const extractedTargetCompanies: ParsedTargetCompanyRow[] = [];
   let skippedDuplicates = 0;
   let skippedInvalid = 0;
 
@@ -296,9 +306,25 @@ export function buildNormalizedJobsFromMapping(params: {
       continue;
     }
 
+    const isUntitled = !title || /^untitled(\s+role)?$/i.test(title.trim());
+    const jobUrl = getVal(row, 'jobUrl');
+    const notes = getVal(row, 'notes');
+
+    if (params.extractUntitledAsTargetCompanies && isUntitled && company) {
+      const key = company.trim().toLowerCase();
+      if (!seenCompanyNames.has(key)) {
+        seenCompanyNames.add(key);
+        extractedTargetCompanies.push({
+          name: company.trim().slice(0, 140),
+          careersUrl: /^https?:\/\//i.test(jobUrl) ? jobUrl.slice(0, 950) : undefined,
+          notes: notes ? notes.slice(0, 400) : undefined,
+        });
+      }
+      continue;
+    }
+
     const finalTitle = title || 'Untitled Role';
     const finalCompany = company || 'Unspecified Company';
-    const jobUrl = getVal(row, 'jobUrl');
     const location = getVal(row, 'location') || 'Unspecified';
     const dedupKey = jobUrl || `${finalCompany}|${finalTitle}|${location}`;
     const urlHash = computeClientHash(dedupKey);
@@ -326,7 +352,6 @@ export function buildNormalizedJobsFromMapping(params: {
           .slice(0, 10)
       : [];
     const summary = getVal(row, 'summary');
-    const notes = getVal(row, 'notes');
     const sourceName =
       getVal(row, 'sourceName') ||
       `Import · ${params.fileName.replace(/\.[^.]+$/, '') || 'Uploaded List'}`;
@@ -361,5 +386,82 @@ export function buildNormalizedJobsFromMapping(params: {
     });
   }
 
-  return { jobs, skippedDuplicates, skippedInvalid };
+  return { jobs, extractedTargetCompanies, skippedDuplicates, skippedInvalid };
+}
+
+export function parseTargetCompaniesCsv(rawText: string): ParsedTargetCompanyRow[] {
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    throw new Error('CSV or text input is empty.');
+  }
+
+  const firstNewline = trimmed.indexOf('\n');
+  const firstLine = firstNewline === -1 ? trimmed : trimmed.slice(0, firstNewline);
+  const delimiter = detectDelimiter(firstLine);
+  const matrix = parseDelimitedRows(trimmed, delimiter);
+
+  if (matrix.length === 0) {
+    throw new Error('No company rows found in the uploaded CSV.');
+  }
+
+  const headerRow = matrix[0].map((c) => c.trim().toLowerCase());
+  const looksLikeHeader = headerRow.some((h) =>
+    /^(company|company\s*name|target\s*company|organization|org|employer|firm|name|careers?\s*url|url|website|notes?)$/i.test(
+      h
+    )
+  );
+
+  let nameCol = 0;
+  let urlCol = -1;
+  let notesCol = -1;
+
+  if (looksLikeHeader) {
+    const foundName = headerRow.findIndex((h) =>
+      /(company|org|employer|firm|name)/i.test(h)
+    );
+    if (foundName >= 0) nameCol = foundName;
+    urlCol = headerRow.findIndex((h) => /(url|link|career|site|website)/i.test(h));
+    notesCol = headerRow.findIndex((h) => /(note|comment|role|interest|reason|priority|stage)/i.test(h));
+  } else if (matrix[0].length >= 2) {
+    const secondLooksUrl = matrix.some((r) => /^https?:\/\//i.test((r[1] ?? '').trim()));
+    if (secondLooksUrl) {
+      urlCol = 1;
+      if (matrix[0].length >= 3) notesCol = 2;
+    } else {
+      notesCol = 1;
+    }
+  }
+
+  const dataRows = looksLikeHeader ? matrix.slice(1) : matrix;
+  const seen = new Set<string>();
+  const companies: ParsedTargetCompanyRow[] = [];
+
+  for (const row of dataRows.slice(0, 500)) {
+    const rawName = (row[nameCol] ?? '').trim();
+    if (!rawName) continue;
+    const key = rawName.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const rawUrl = urlCol >= 0 ? (row[urlCol] ?? '').trim() : '';
+    const rawNotes = notesCol >= 0 ? (row[notesCol] ?? '').trim() : '';
+    const normalizedUrl =
+      rawUrl && /^https?:\/\//i.test(rawUrl)
+        ? rawUrl.slice(0, 950)
+        : rawUrl && /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(rawUrl)
+        ? `https://${rawUrl}`.slice(0, 950)
+        : undefined;
+
+    companies.push({
+      name: rawName.slice(0, 140),
+      careersUrl: normalizedUrl,
+      notes: rawNotes ? rawNotes.slice(0, 400) : undefined,
+    });
+  }
+
+  if (companies.length === 0) {
+    throw new Error('Could not find any company names in the uploaded CSV.');
+  }
+
+  return companies;
 }

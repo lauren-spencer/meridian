@@ -10,6 +10,7 @@ interface SchemaViewProps {
   counts: {
     jobs: number;
     sources: number;
+    targetCompanies: number;
     resumes: number;
     rules: number;
     events: number;
@@ -47,6 +48,13 @@ const FIRESTORE_COLLECTIONS: FirestoreCollectionMeta[] = [
     keyFields: 'name, url, atsType, cadenceHours, enabled, lastCheckedAt, totalFound',
     purpose: 'Configured ATS feeds (Greenhouse, Lever, Ashby), RSS feeds, and scan run metrics.',
     countKey: 'sources',
+  },
+  {
+    path: '/users/{userId}/targetCompanies/{companyId}',
+    entity: 'TargetCompany',
+    keyFields: 'name, careersUrl, notes, enabled, lastCheckedAt, lastFoundCount',
+    purpose: 'Watched target companies scanned during agent pulls for matching open roles.',
+    countKey: 'targetCompanies',
   },
   {
     path: '/users/{userId}/resumes/{resumeId}',

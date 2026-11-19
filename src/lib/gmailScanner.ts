@@ -30,7 +30,7 @@ function getGeminiClient(): GoogleGenAI {
 }
 
 export const DEFAULT_GMAIL_QUERY =
-  '(from:jobalerts-noreply@linkedin.com OR from:messages-noreply@linkedin.com OR from:alert@indeed.com OR from:wellfound.com OR from:joinhandshake.com OR from:12twenty.com) newer_than:60d';
+  'from:jobalerts-noreply@linkedin.com newer_than:60d';
 
 interface GmailMessagePart {
   mimeType?: string;
@@ -110,7 +110,7 @@ function extractBodyFromPayload(payload?: GmailMessagePayload): string {
 
   walk(payload);
 
-  // Prefer HTML when available for job digests because URLs to LinkedIn / 12twenty roles live in anchor hrefs
+  // Prefer HTML when available for job digests because direct role URLs live in anchor hrefs
   if (htmlChunks.length > 0) {
     return stripHtmlKeepingLinks(htmlChunks.join('\n')).slice(0, 4000);
   }
@@ -127,14 +127,14 @@ function getHeader(payload: GmailMessagePayload | undefined, name: string): stri
   );
 }
 
-function detectSenderOrigin(from: string, subject: string): 'LinkedIn (Gmail)' | 'Kellogg / 12twenty (Gmail)' | 'Gmail Alert' {
+function detectSenderOrigin(from: string, subject: string): string {
   const combined = `${from} ${subject}`.toLowerCase();
-  if (combined.includes('12twenty') || combined.includes('kellogg') || combined.includes('northwestern')) {
-    return 'Kellogg / 12twenty (Gmail)';
-  }
-  if (combined.includes('linkedin')) {
-    return 'LinkedIn (Gmail)';
-  }
+  if (combined.includes('linkedin')) return 'LinkedIn (Gmail)';
+  if (combined.includes('indeed')) return 'Indeed (Gmail)';
+  if (combined.includes('wellfound') || combined.includes('angel.co')) return 'Wellfound (Gmail)';
+  if (combined.includes('glassdoor')) return 'Glassdoor (Gmail)';
+  if (combined.includes('builtin')) return 'Built In (Gmail)';
+  if (combined.includes('handshake')) return 'Handshake (Gmail)';
   return 'Gmail Alert';
 }
 
@@ -286,7 +286,7 @@ export async function scanGmailForJobs(input: GmailScanInput): Promise<GmailScan
         sourceResults: [
           {
             sourceId: 'src-gmail',
-            sourceName: 'Gmail (LinkedIn / Kellogg / 12twenty)',
+            sourceName: 'Gmail Job Alerts',
             atsType: 'Gmail',
             status: 'ok',
             rawFetched: 0,
@@ -357,7 +357,7 @@ export async function scanGmailForJobs(input: GmailScanInput): Promise<GmailScan
     .map((f) => `${f.jobTitle} @ ${f.company}${f.reason ? ` (${f.reason})` : ''}`)
     .join('; ');
 
-  const extractionPrompt = `You are extracting real job openings, recruiting outreach roles, and career portal postings from a user's Gmail emails (specifically from LinkedIn, Kellogg Career Management, and 12twenty).
+  const extractionPrompt = `You are extracting real job openings, recruiting outreach roles, and job alert postings from a user's Gmail emails.
 
 USER CRITERIA:
 ${input.searchPrompt}
@@ -369,8 +369,8 @@ RECENT LIKES (👍): ${likes || 'None yet'}
 RECENT DISLIKES (👎): ${dislikes || 'None yet'}
 
 INSTRUCTIONS:
-- Read the emails below and extract ONLY genuine job roles, recruiting outreach opportunities, or 12twenty/Kellogg job postings (skip generic newsletters, social connection requests, profile views, security alerts, or unrelated notifications).
-- A single digest email (e.g. LinkedIn Job Alert or 12twenty weekly digest) may contain multiple distinct jobs — extract up to 10 best matching jobs across all emails.
+- Read the emails below and extract ONLY genuine job roles, recruiter outreach opportunities, or job alert postings (skip generic newsletters, social connection requests, profile views, security alerts, or unrelated notifications).
+- A single digest email (e.g. LinkedIn Job Alert or job board digest) may contain multiple distinct jobs — extract up to 10 best matching jobs across all emails.
 - For each job return:
   - messageId: exact messageId of the source email
   - title: role title
@@ -380,13 +380,13 @@ INSTRUCTIONS:
   - salaryLabel: e.g. "$190k – $220k" or "Not listed"
   - location: city/region or "Remote"
   - locationType: strictly "Remote", "Hybrid", or "Onsite"
-  - deadlineAt: "YYYY-MM-DD" if an application deadline or campus recruiting deadline (common in Kellogg/12twenty emails!) is mentioned, else null
+  - deadlineAt: "YYYY-MM-DD" if an application deadline is mentioned, else null
   - skills: 3-5 concise skills or domain tags
-  - summary: 1-2 crisp sentences about the role (mentioning if it came from a LinkedIn alert, recruiter note, or Kellogg/12twenty recruiting post)
+  - summary: 1-2 crisp sentences about the role (mentioning if it came from a LinkedIn alert, job board digest, or recruiter email)
   - fullDescription: detailed job description text extracted from the email (responsibilities, requirements, compensation, timeline) formatted cleanly with headings/bullets
   - matchScore: integer 0-100 calibrated against USER CRITERIA, ACTIVE FILTER RULES, and recent feedback
   - matchReason: 1 crisp sentence explaining the match score
-  - originLabel: "LinkedIn (Gmail)" or "Kellogg / 12twenty (Gmail)"
+  - originLabel: e.g. "LinkedIn (Gmail)" or "Gmail Alert"
 
 EMAILS TO PARSE:
 ${JSON.stringify(emailDigestPayload)}`;
@@ -429,16 +429,25 @@ ${JSON.stringify(emailDigestPayload)}`;
     const originName =
       item.originLabel ||
       msgOriginById.get(item.messageId) ||
-      'Gmail (LinkedIn / Kellogg / 12twenty)';
+      'Gmail Alert';
 
     const emailDate = msgDateById.get(item.messageId) || discoveredAt;
+    const inferredDomain = (() => {
+      try {
+        const host = new URL(cleanUrl).hostname.replace(/^www\./, '');
+        if (host && host !== 'mail.google.com') return host;
+      } catch {
+        // fallback below
+      }
+      return `${item.company.toLowerCase().replace(/[^a-z0-9]/g, '') || 'company'}.com`;
+    })();
 
     newJobs.push({
       id: `job-gmail-${Date.now()}-${i}`,
       urlHash,
       title: item.title.trim(),
       company: item.company.trim(),
-      companyDomain: originName.includes('LinkedIn') ? 'linkedin.com' : '12twenty.com',
+      companyDomain: inferredDomain,
       stage: 'inbox',
       isNew: true,
       matchScore: Math.min(100, Math.max(0, Math.round(Number(item.matchScore) || 75))),
@@ -480,7 +489,7 @@ ${JSON.stringify(emailDigestPayload)}`;
     sourceResults: [
       {
         sourceId: 'src-gmail',
-        sourceName: `Gmail (${validMessages.length} emails from LinkedIn / Kellogg / 12twenty)`,
+        sourceName: `Gmail (${validMessages.length} job alert emails)`,
         atsType: 'Gmail',
         status: 'ok',
         rawFetched: extracted.length,

@@ -192,7 +192,7 @@
         },
         "atsType": {
           "type": "string",
-          "enum": ["Greenhouse", "Lever", "Ashby", "Custom Markdown", "RSS Feed", "Gmail", "Slack", "WhatsApp", "CSV Import"]
+          "enum": ["Greenhouse", "Lever", "Ashby", "Custom Markdown", "RSS Feed", "Gmail", "Slack", "WhatsApp", "CSV Import", "Target Company"]
         },
         "jobUrl": {
           "type": "string",
@@ -304,7 +304,7 @@
         },
         "atsType": {
           "type": "string",
-          "enum": ["Greenhouse", "Lever", "Ashby", "Custom Markdown", "RSS Feed", "Gmail", "Slack", "WhatsApp", "CSV Import"]
+          "enum": ["Greenhouse", "Lever", "Ashby", "Custom Markdown", "RSS Feed", "Gmail", "Slack", "WhatsApp", "CSV Import", "Target Company"]
         },
         "cadenceHours": {
           "type": "number"
@@ -563,6 +563,57 @@
         }
       },
       "required": ["id", "ownerId", "roleType", "fileName", "rawText", "uploadedAt", "createdAt", "updatedAt"]
+    },
+    "TargetCompany": {
+      "title": "TargetCompany",
+      "description": "Watched target company where the user wants Meridian to look out for desired roles as they open.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "careersUrl": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "lastCheckedAt": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "lastFoundCount": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "ownerId", "name", "enabled", "lastCheckedAt", "lastFoundCount", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -577,6 +628,10 @@
     "/users/{userId}/sources/{sourceId}": {
       "schema": { "$ref": "#/entities/JobSource" },
       "description": "User's configured ATS and career page sources (owner-only)."
+    },
+    "/users/{userId}/targetCompanies/{companyId}": {
+      "schema": { "$ref": "#/entities/TargetCompany" },
+      "description": "User's target companies watchlist monitored for matching roles during agent pulls (owner-only)."
     },
     "/users/{userId}/rules/{ruleId}": {
       "schema": { "$ref": "#/entities/LearnedRule" },

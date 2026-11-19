@@ -30,11 +30,15 @@ import {
   createJobsInCloud,
   createRuleInCloud,
   createSourceInCloud,
+  createTargetCompaniesBatchInCloud,
   deleteEventInCloud,
   deleteFeedbackInCloud,
+  deleteJobInCloud,
+  deleteJobsBatchInCloud,
   deleteRoleResumeInCloud,
   deleteRuleInCloud,
   deleteSourceInCloud,
+  deleteTargetCompanyInCloud,
   loadUserWorkspace,
   saveUserProfileToCloud,
   updateCareerContextInCloud,
@@ -42,13 +46,17 @@ import {
   updateJobNetworkingContactsInCloud,
   updateJobNotesInCloud,
   updateJobRescoreBatchInCloud,
+  updateJobsEnrichmentBatchInCloud,
   updateJobTriageInCloud,
   updateRuleInCloud,
   updateSourceConfigInCloud,
   updateSourceMetricsInCloud,
+  updateTargetCompanyInCloud,
+  updateTargetCompanyMetricsInCloud,
   updateWorkspaceSettingsInCloud,
   upsertRoleResumeInCloud,
 } from './lib/firestoreStore';
+import type { ParsedTargetCompanyRow } from './lib/csvParser';
 import {
   clearGmailAccessToken,
   getGmailAccessToken,
@@ -69,6 +77,7 @@ import {
   DislikeReason,
   FeedbackEntry,
   ImportBatchRecord,
+  JobEnrichmentPatch,
   JobEvent,
   JobRecord,
   JobSource,
@@ -80,6 +89,7 @@ import {
   RuleSuggestion,
   ServerScheduleState,
   TailoredResumeDocument,
+  TargetCompany,
   ToastNotification,
   UserIntakeProfile,
   WorkspaceView,
@@ -95,12 +105,11 @@ const STORAGE_KEY = 'meridian_w1_state_v1';
 const CHAT_STORAGE_KEY = 'meridian_chat_history_v1';
 
 const VALID_REASONS: DislikeReason[] = [
-  'Wrong seniority',
+  'Wrong employment type',
   'Low pay',
-  'Not remote',
-  'Wrong stack',
-  'Too much travel',
   'Company fit',
+  'Wrong role type',
+  'Location',
 ];
 
 const VALID_STAGES: PipelineStage[] = [
@@ -111,6 +120,49 @@ const VALID_STAGES: PipelineStage[] = [
   'offer',
   'archived',
 ];
+
+function isUntitledJob(job: JobRecord): boolean {
+  if (job.stage === 'archived') return false;
+  const t = (job.title || '').trim().toLowerCase();
+  const c = (job.company || '').trim().toLowerCase();
+  return (
+    (!t || t === 'untitled role' || t === 'untitled') &&
+    Boolean(c) &&
+    c !== 'unknown company'
+  );
+}
+
+function getIncompleteJobsForEnrichment(jobList: JobRecord[]) {
+  return jobList
+    .filter((j) => {
+      if (j.stage === 'archived') return false;
+      const t = (j.title || '').trim().toLowerCase();
+      const s = (j.salaryLabel || '').trim().toLowerCase();
+      const loc = (j.location || '').trim().toLowerCase();
+      const desc = (j.fullDescription || '').trim();
+      const sum = (j.summary || '').trim();
+      const missingTitle = !t || t === 'untitled role' || t === 'untitled';
+      const missingSalary = !s || s === 'not listed' || s === 'unspecified' || s === 'n/a';
+      const missingLocation = !loc || loc === 'unspecified' || loc === 'n/a';
+      const missingDesc = desc.length < 180;
+      const missingSummary = sum.length < 40;
+      return missingTitle || missingSalary || missingLocation || missingDesc || missingSummary;
+    })
+    .slice(0, 15)
+    .map((j) => ({
+      id: j.id,
+      title: j.title,
+      company: j.company,
+      salaryLabel: j.salaryLabel,
+      location: j.location,
+      locationType: j.locationType,
+      employmentType: j.employmentType,
+      jobUrl: j.jobUrl,
+      summary: j.summary,
+      fullDescription: j.fullDescription,
+      skills: j.skills,
+    }));
+}
 
 function loadChatHistory(): ChatMessage[] {
   try {
@@ -126,41 +178,37 @@ function loadChatHistory(): ChatMessage[] {
 }
 
 const REASON_TO_RULE: Record<DislikeReason, { rule: string; summary: string }> = {
-  'Too much travel': {
-    rule: 'Exclude roles mentioning >10% travel or frequent onsite client travel',
+  'Wrong employment type': {
+    rule: 'Filter out mismatched employment types (e.g., internships, contract, or part-time roles)',
     summary:
-      'You have repeatedly downvoted roles requiring travel. Add an automatic travel filter to future agent runs?',
-  },
-  'Not remote': {
-    rule: 'Strictly filter out onsite-only and >2 day/week hybrid roles',
-    summary:
-      'Several recent downvotes cited non-remote work policies. Enforce strict remote-only filtering?',
-  },
-  'Wrong seniority': {
-    rule: 'Exclude IC2/mid-level and people-management titles; require Senior, Staff, or Principal',
-    summary:
-      'You have downvoted roles outside your target seniority band. Lock title matching to Senior/Staff/Principal?',
+      'You have repeatedly downvoted roles with the wrong employment type. Enforce strict employment-type filtering on future runs?',
   },
   'Low pay': {
-    rule: 'Require listed salary range ceiling >= $200,000',
+    rule: 'Require listed compensation range to meet your target floor',
     summary:
-      'Multiple hidden roles fell below your compensation expectations. Raise the minimum compensation threshold?',
-  },
-  'Wrong stack': {
-    rule: 'Deprioritize Java/C# enterprise stacks; prioritize Go, Rust, and TypeScript',
-    summary:
-      'You have hidden roles outside your preferred stack. Penalize non-Go/Rust/TypeScript backends during scoring?',
+      'Multiple hidden roles fell below your compensation expectations. Add a compensation filter to future agent runs?',
   },
   'Company fit': {
-    rule: 'Prioritize product-led developer infrastructure and SaaS companies (Series B–D)',
+    rule: 'Prioritize target-stage companies and industries aligned with your strong matches',
     summary:
       'You have filtered out roles based on company fit. Narrow company stage & domain scoring weights?',
+  },
+  'Wrong role type': {
+    rule: 'Exclude off-track role functions and keep title matching tightly aligned to your target role types',
+    summary:
+      'Several recent downvotes cited wrong role types. Tighten title and function matching during discovery?',
+  },
+  Location: {
+    rule: 'Strictly match your preferred cities and work mode (Remote / Hybrid / Onsite)',
+    summary:
+      'You have repeatedly hidden roles due to location. Enforce strict location & work-mode filtering?',
   },
 };
 
 interface PersistedState {
   jobs: JobRecord[];
   sources: JobSource[];
+  targetCompanies: TargetCompany[];
   events: JobEvent[];
   feedbackHistory: FeedbackEntry[];
   searchPrompt: string;
@@ -226,6 +274,9 @@ function loadInitialState(): PersistedState {
         return {
           jobs: backfillSeedJobDetails(parsed.jobs),
           sources: onlyLegacySources ? INITIAL_SOURCES : parsed.sources,
+          targetCompanies: Array.isArray(parsed.targetCompanies)
+            ? parsed.targetCompanies
+            : [],
           events: Array.isArray(parsed.events) ? parsed.events : INITIAL_EVENTS,
           feedbackHistory: Array.isArray(parsed.feedbackHistory)
             ? parsed.feedbackHistory
@@ -233,7 +284,9 @@ function loadInitialState(): PersistedState {
           searchPrompt: parsed.searchPrompt ?? INITIAL_SEARCH_PROMPT,
           rules: Array.isArray(parsed.rules) ? parsed.rules : INITIAL_RULES,
           dismissedReasons: Array.isArray(parsed.dismissedReasons)
-            ? parsed.dismissedReasons
+            ? parsed.dismissedReasons.filter((r): r is DislikeReason =>
+                VALID_REASONS.includes(r)
+              )
             : [],
           lastRunLabel: parsed.lastRunLabel ?? 'Not run yet',
           runHistory: Array.isArray(parsed.runHistory) ? parsed.runHistory : [],
@@ -269,6 +322,7 @@ function loadInitialState(): PersistedState {
   return {
     jobs: INITIAL_JOBS,
     sources: INITIAL_SOURCES,
+    targetCompanies: [],
     events: INITIAL_EVENTS,
     feedbackHistory: INITIAL_FEEDBACK,
     searchPrompt: INITIAL_SEARCH_PROMPT,
@@ -303,6 +357,9 @@ export default function App() {
 
   const [jobs, setJobs] = useState<JobRecord[]>(initial.jobs);
   const [sources, setSources] = useState<JobSource[]>(initial.sources);
+  const [targetCompanies, setTargetCompanies] = useState<TargetCompany[]>(
+    initial.targetCompanies
+  );
   const [events, setEvents] = useState<JobEvent[]>(initial.events);
   const [feedbackHistory, setFeedbackHistory] = useState<FeedbackEntry[]>(
     initial.feedbackHistory
@@ -342,6 +399,11 @@ export default function App() {
     setIntakeOpen(true);
   }, []);
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importModalMode, setImportModalMode] = useState<'roles' | 'companies'>('roles');
+  const openImportModal = useCallback((mode: 'roles' | 'companies' = 'roles') => {
+    setImportModalMode(mode);
+    setImportModalOpen(true);
+  }, []);
   const [importedCountInSession, setImportedCountInSession] = useState(0);
 
   // Firebase Auth account state
@@ -506,6 +568,9 @@ export default function App() {
               if (cloud.searchPrompt) setSearchPrompt(cloud.searchPrompt);
               if (cloud.jobs.length > 0) setJobs(backfillSeedJobDetails(cloud.jobs));
               if (cloud.sources.length > 0) setSources(cloud.sources);
+              if (cloud.targetCompanies.length > 0) {
+                setTargetCompanies(cloud.targetCompanies);
+              }
               if (cloud.rules.length > 0) setRules(cloud.rules);
               if (cloud.feedbackHistory.length > 0) {
                 setFeedbackHistory(cloud.feedbackHistory);
@@ -558,6 +623,7 @@ export default function App() {
       const payload: PersistedState = {
         jobs,
         sources,
+        targetCompanies,
         events,
         feedbackHistory,
         searchPrompt,
@@ -581,6 +647,7 @@ export default function App() {
   }, [
     jobs,
     sources,
+    targetCompanies,
     events,
     feedbackHistory,
     searchPrompt,
@@ -607,7 +674,11 @@ export default function App() {
     (
       addedJobs: JobRecord[],
       report: AgentRunReport | undefined,
-      trigger: 'manual' | 'scheduled' = 'manual'
+      trigger: 'manual' | 'scheduled' = 'manual',
+      extras?: {
+        enrichedJobs?: JobEnrichmentPatch[];
+        checkedCompanyIds?: { id: string; foundCount: number }[];
+      }
     ) => {
       if (report && seenReportIdsRef.current.has(report.id)) {
         return;
@@ -616,16 +687,79 @@ export default function App() {
         seenReportIdsRef.current.add(report.id);
       }
 
-      if (addedJobs.length > 0) {
+      const enrichedPatches = Array.isArray(extras?.enrichedJobs)
+        ? extras.enrichedJobs
+        : [];
+      const checkedCompanies = Array.isArray(extras?.checkedCompanyIds)
+        ? extras.checkedCompanyIds
+        : [];
+
+      if (addedJobs.length > 0 || enrichedPatches.length > 0) {
+        const patchMap = new Map(enrichedPatches.map((p) => [p.id, p]));
         setJobs((prev) => {
-          const existing = new Set(prev.map((j) => j.urlHash));
-          const uniqueNew = addedJobs.filter((j) => !existing.has(j.urlHash));
-          if (uniqueNew.length > 0) {
-            persistCloud((uid) => createJobsInCloud(uid, uniqueNew));
-            return [...uniqueNew, ...prev];
+          const updatedPrev =
+            patchMap.size > 0
+              ? prev.map((j) => {
+                  const p = patchMap.get(j.id);
+                  if (!p) return j;
+                  return {
+                    ...j,
+                    title: p.title ?? j.title,
+                    salaryLabel: p.salaryLabel ?? j.salaryLabel,
+                    salaryMin: p.salaryMin ?? j.salaryMin,
+                    salaryMax: p.salaryMax ?? j.salaryMax,
+                    location: p.location ?? j.location,
+                    locationType: p.locationType ?? j.locationType,
+                    employmentType: p.employmentType ?? j.employmentType,
+                    skills: p.skills && p.skills.length > 0 ? p.skills : j.skills,
+                    summary: p.summary ?? j.summary,
+                    fullDescription: p.fullDescription ?? j.fullDescription,
+                    jobUrl: p.jobUrl ?? j.jobUrl,
+                  };
+                })
+              : prev;
+
+          if (addedJobs.length > 0) {
+            const existing = new Set(updatedPrev.map((j) => j.urlHash));
+            const uniqueNew = addedJobs.filter((j) => !existing.has(j.urlHash));
+            if (uniqueNew.length > 0) {
+              persistCloud((uid) => createJobsInCloud(uid, uniqueNew));
+              return [...uniqueNew, ...updatedPrev];
+            }
           }
-          return prev;
+          return updatedPrev;
         });
+
+        if (enrichedPatches.length > 0) {
+          persistCloud((uid) =>
+            updateJobsEnrichmentBatchInCloud(uid, enrichedPatches)
+          );
+        }
+      }
+
+      if (checkedCompanies.length > 0) {
+        const checkedMap = new Map(checkedCompanies.map((c) => [c.id, c.foundCount]));
+        const checkedLabel = report
+          ? `Today, ${report.completedTime}`
+          : 'Just now';
+        setTargetCompanies((prev) =>
+          prev.map((tc) => {
+            const found = checkedMap.get(tc.id);
+            if (found === undefined) return tc;
+            const nextCount = (tc.lastFoundCount ?? 0) + found;
+            persistCloud((uid) =>
+              updateTargetCompanyMetricsInCloud(uid, tc.id, {
+                lastCheckedAt: checkedLabel,
+                lastFoundCount: nextCount,
+              })
+            );
+            return {
+              ...tc,
+              lastCheckedAt: checkedLabel,
+              lastFoundCount: nextCount,
+            };
+          })
+        );
       }
 
       if (report) {
@@ -666,18 +800,27 @@ export default function App() {
           (r) => r.status === 'error'
         ).length;
         const prefix = trigger === 'scheduled' ? 'Scheduled agent' : 'Agent';
+        const enrichedCount = enrichedPatches.length;
 
         if (addedJobs.length > 0) {
+          const enrichNote =
+            enrichedCount > 0 ? `, enriched ${enrichedCount} incomplete` : '';
           pushToast(
             `${prefix} found ${addedJobs.length} new ${
               addedJobs.length === 1 ? 'role' : 'roles'
-            } (${report.totalFetched} scanned, ${report.totalSkipped} deduped)`,
+            }${enrichNote} (${report.totalFetched} scanned, ${report.totalSkipped} deduped)`,
             'Review New',
             () => {
               setPreferredTableTab('new');
               setTableTabKey((k) => k + 1);
               setActiveView('table');
             }
+          );
+        } else if (enrichedCount > 0) {
+          pushToast(
+            `${prefix} enriched ${enrichedCount} incomplete ${
+              enrichedCount === 1 ? 'role' : 'roles'
+            } with missing details`
           );
         } else if (failedCount > 0) {
           pushToast(
@@ -718,12 +861,18 @@ export default function App() {
         const payload = JSON.parse(event.data) as {
           trigger?: 'manual' | 'scheduled';
           newJobs?: JobRecord[];
+          enrichedJobs?: JobEnrichmentPatch[];
+          checkedCompanyIds?: { id: string; foundCount: number }[];
           runReport?: AgentRunReport;
         };
         applyCompletedAgentRun(
           Array.isArray(payload.newJobs) ? payload.newJobs : [],
           payload.runReport,
-          payload.trigger ?? 'manual'
+          payload.trigger ?? 'manual',
+          {
+            enrichedJobs: payload.enrichedJobs,
+            checkedCompanyIds: payload.checkedCompanyIds,
+          }
         );
       } catch {
         // Ignore
@@ -802,7 +951,7 @@ export default function App() {
     return () => es.close();
   }, [applyCompletedAgentRun, pushToast]);
 
-  // Sync latest workspace criteria, sources, hashes & feedback to the server scheduler
+  // Sync latest workspace criteria, sources, target companies, incomplete roles, hashes & feedback to the server scheduler
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void fetch('/api/workspace/sync', {
@@ -810,6 +959,8 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sources,
+          targetCompanies,
+          incompleteJobs: getIncompleteJobsForEnrichment(jobs),
           existingHashes: jobs.map((j) => j.urlHash),
           searchPrompt,
           rules: rules.map((r) => ({ text: r.text, active: r.active })),
@@ -825,7 +976,7 @@ export default function App() {
       });
     }, 600);
     return () => window.clearTimeout(timer);
-  }, [sources, jobs, searchPrompt, rules, feedbackHistory]);
+  }, [sources, targetCompanies, jobs, searchPrompt, rules, feedbackHistory]);
 
   const buildRichFeedback = useCallback(() => {
     const jobById = new Map(jobs.map((j) => [j.id, j]));
@@ -888,6 +1039,10 @@ export default function App() {
   );
   const activePipelineCount = useMemo(
     () => jobs.filter((j) => j.stage !== 'archived').length,
+    [jobs]
+  );
+  const untitledJobCount = useMemo(
+    () => jobs.filter((j) => isUntitledJob(j)).length,
     [jobs]
   );
 
@@ -1207,6 +1362,15 @@ export default function App() {
       })
     );
     pushToast(`Restored "${target.title}" to Saved`);
+  };
+
+  const handleDeleteJob = (jobId: string) => {
+    const target = jobs.find((j) => j.id === jobId);
+    if (!target) return;
+    setJobs((prev) => prev.filter((j) => j.id !== jobId));
+    setSelectedJobId((prev) => (prev === jobId ? null : prev));
+    persistCloud((uid) => deleteJobInCloud(uid, jobId));
+    pushToast(`Deleted "${target.title}" at ${target.company}`);
   };
 
   const handleMoveStage = (jobId: string, nextStage: PipelineStage) => {
@@ -1925,7 +2089,142 @@ export default function App() {
     }
   };
 
-  // Live ATS Agent Runner (also scans Gmail & Slack automatically when connected)
+  // Target Companies Watchlist handlers (manual, CSV import, and "Untitled Role" migration)
+  const handleAddTargetCompany = (
+    name: string,
+    careersUrl?: string,
+    notes?: string
+  ) => {
+    const cleanName = name.trim();
+    if (!cleanName) return;
+    const exists = targetCompanies.some(
+      (c) => c.name.trim().toLowerCase() === cleanName.toLowerCase()
+    );
+    if (exists) {
+      pushToast(`"${cleanName}" is already in your Target Companies Watchlist.`);
+      return;
+    }
+    const created: TargetCompany = {
+      id: `tc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: cleanName,
+      careersUrl: careersUrl?.trim() || undefined,
+      notes: notes?.trim() || undefined,
+      enabled: true,
+      lastCheckedAt: 'Pending pull',
+      lastFoundCount: 0,
+    };
+    setTargetCompanies((prev) => [created, ...prev]);
+    persistCloud((uid) => createTargetCompaniesBatchInCloud(uid, [created]));
+    pushToast(`Watching "${cleanName}" for your desired roles`);
+  };
+
+  const handleImportTargetCompanies = async (
+    rows: ParsedTargetCompanyRow[],
+    sourceLabel?: string
+  ) => {
+    const existingKeys = new Set(
+      targetCompanies.map((c) => c.name.trim().toLowerCase())
+    );
+    const created: TargetCompany[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const cleanName = row.name.trim();
+      if (!cleanName) continue;
+      const key = cleanName.toLowerCase();
+      if (existingKeys.has(key)) continue;
+      existingKeys.add(key);
+      created.push({
+        id: `tc-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 5)}`,
+        name: cleanName,
+        careersUrl: row.careersUrl?.trim() || undefined,
+        notes: row.notes?.trim() || undefined,
+        enabled: true,
+        lastCheckedAt: 'Pending pull',
+        lastFoundCount: 0,
+      });
+    }
+
+    if (created.length === 0) {
+      pushToast('All listed target companies are already in your watchlist.');
+      return;
+    }
+
+    setTargetCompanies((prev) => [...created, ...prev]);
+    persistCloud((uid) => createTargetCompaniesBatchInCloud(uid, created));
+    pushToast(
+      `Added ${created.length} target ${
+        created.length === 1 ? 'company' : 'companies'
+      }${sourceLabel ? ` from ${sourceLabel}` : ''} to your watchlist`
+    );
+  };
+
+  const handleToggleTargetCompany = (companyId: string) => {
+    const target = targetCompanies.find((c) => c.id === companyId);
+    if (!target) return;
+    const nextEnabled = !target.enabled;
+    setTargetCompanies((prev) =>
+      prev.map((c) => (c.id === companyId ? { ...c, enabled: nextEnabled } : c))
+    );
+    persistCloud((uid) =>
+      updateTargetCompanyInCloud(uid, companyId, { enabled: nextEnabled })
+    );
+  };
+
+  const handleDeleteTargetCompany = (companyId: string) => {
+    const target = targetCompanies.find((c) => c.id === companyId);
+    setTargetCompanies((prev) => prev.filter((c) => c.id !== companyId));
+    persistCloud((uid) => deleteTargetCompanyInCloud(uid, companyId));
+    if (target) {
+      pushToast(`Removed "${target.name}" from Target Companies`);
+    }
+  };
+
+  const handleMoveUntitledToTargetCompanies = () => {
+    const untitled = jobs.filter((j) => isUntitledJob(j));
+    if (untitled.length === 0) return;
+
+    const existingKeys = new Set(
+      targetCompanies.map((c) => c.name.trim().toLowerCase())
+    );
+    const created: TargetCompany[] = [];
+
+    for (let i = 0; i < untitled.length; i++) {
+      const job = untitled[i];
+      const cleanName = job.company.trim();
+      const key = cleanName.toLowerCase();
+      if (!cleanName || existingKeys.has(key)) continue;
+      existingKeys.add(key);
+      created.push({
+        id: `tc-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 5)}`,
+        name: cleanName,
+        careersUrl:
+          job.jobUrl && /^https?:\/\//i.test(job.jobUrl) ? job.jobUrl : undefined,
+        notes: job.notes?.trim() || undefined,
+        enabled: true,
+        lastCheckedAt: 'Pending pull',
+        lastFoundCount: 0,
+      });
+    }
+
+    const removedIds = new Set(untitled.map((j) => j.id));
+    if (created.length > 0) {
+      setTargetCompanies((prev) => [...created, ...prev]);
+      persistCloud((uid) => createTargetCompaniesBatchInCloud(uid, created));
+    }
+    setJobs((prev) => prev.filter((j) => !removedIds.has(j.id)));
+    setSelectedJobId((prev) => (prev && removedIds.has(prev) ? null : prev));
+    persistCloud((uid) => deleteJobsBatchInCloud(uid, Array.from(removedIds)));
+
+    pushToast(
+      `Moved ${untitled.length} "Untitled Role" ${
+        untitled.length === 1 ? 'row' : 'rows'
+      } to your Target Companies Watchlist`,
+      'View Watchlist',
+      () => setActiveView('sources')
+    );
+  };
+
+  // Live ATS Agent Runner (also checks Target Companies, enriches incomplete roles, and scans Gmail & Slack when connected)
   const executeAgentRun = async (
     targetSourceId?: string,
     overrides?: {
@@ -1946,11 +2245,24 @@ export default function App() {
           .map((s) => ({ ...s, enabled: true }))
       : activeSourceList.filter((s) => s.enabled);
 
+    const activeTargetCompanies = targetSourceId
+      ? []
+      : targetCompanies.filter((c) => c.enabled);
+    const incompleteJobs = targetSourceId
+      ? []
+      : getIncompleteJobsForEnrichment(jobs);
+
     const hasGmailToken = !targetSourceId && Boolean(getGmailAccessToken());
     const hasSlackToken = !targetSourceId && Boolean(slackTokenRef.current);
+    const hasServerWork =
+      targetSources.length > 0 ||
+      activeTargetCompanies.length > 0 ||
+      incompleteJobs.length > 0;
 
-    if (targetSources.length === 0 && !hasGmailToken && !hasSlackToken) {
-      pushToast('No enabled sources. Enable an ATS board or connect Gmail/Slack in Sources.');
+    if (!hasServerWork && !hasGmailToken && !hasSlackToken) {
+      pushToast(
+        'Nothing to scan yet. Enable an ATS board, add Target Companies, or connect Gmail/Slack in Sources.'
+      );
       return;
     }
 
@@ -1958,12 +2270,14 @@ export default function App() {
     setRunningSourceId(targetSourceId ?? null);
 
     try {
-      if (targetSources.length > 0) {
+      if (hasServerWork) {
         const response = await fetch('/api/agent/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sources: targetSources,
+            targetCompanies: activeTargetCompanies,
+            incompleteJobs,
             existingHashes: jobs.map((j) => j.urlHash),
             searchPrompt: activePrompt,
             rules: rules.map((r) => ({ text: r.text, active: r.active })),
@@ -1973,12 +2287,14 @@ export default function App() {
               vote: f.vote,
               reason: f.reason,
             })),
-            maxNewPerRun: targetSourceId ? 4 : 6,
+            maxNewPerRun: targetSourceId ? 4 : 8,
           }),
         });
 
         const data = (await response.json()) as {
           newJobs?: JobRecord[];
+          enrichedJobs?: JobEnrichmentPatch[];
+          checkedCompanyIds?: { id: string; foundCount: number }[];
           runReport?: AgentRunReport;
           error?: string;
         };
@@ -1990,7 +2306,11 @@ export default function App() {
         applyCompletedAgentRun(
           Array.isArray(data.newJobs) ? data.newJobs : [],
           data.runReport,
-          'manual'
+          'manual',
+          {
+            enrichedJobs: data.enrichedJobs,
+            checkedCompanyIds: data.checkedCompanyIds,
+          }
         );
       }
 
@@ -2104,6 +2424,8 @@ export default function App() {
         intervalMinutes: params.autoScheduleMinutes,
         context: {
           sources: nextSources,
+          targetCompanies,
+          incompleteJobs: getIncompleteJobsForEnrichment(jobs),
           existingHashes: jobs.map((j) => j.urlHash),
           searchPrompt: compiledPrompt,
           rules: rules.map((r) => ({ text: r.text, active: r.active })),
@@ -2139,17 +2461,19 @@ export default function App() {
         cloudProfileExistsRef.current = true;
 
         if (wasNewProfile) {
-          // Seed initial sources, rules, uploaded resumes, and jobs into user's cloud DB
+          // Seed initial sources, target companies, rules, uploaded resumes, and jobs into user's cloud DB
           await Promise.all([
             ...nextSources.map((s) => createSourceInCloud(uid, s)),
             ...rules.map((r) => createRuleInCloud(uid, r)),
             ...resumes.map((r) => upsertRoleResumeInCloud(uid, r)),
+            createTargetCompaniesBatchInCloud(uid, targetCompanies),
             createJobsInCloud(uid, jobs),
           ]);
         } else {
           await Promise.all([
             ...nextSources.map((s) => createSourceInCloud(uid, s)),
             ...resumes.map((r) => upsertRoleResumeInCloud(uid, r)),
+            createTargetCompaniesBatchInCloud(uid, targetCompanies),
           ]);
         }
       } catch (err) {
@@ -2191,6 +2515,8 @@ export default function App() {
           intervalMinutes,
           context: {
             sources,
+            targetCompanies,
+            incompleteJobs: getIncompleteJobsForEnrichment(jobs),
             existingHashes: jobs.map((j) => j.urlHash),
             searchPrompt,
             rules: rules.map((r) => ({ text: r.text, active: r.active })),
@@ -2553,6 +2879,7 @@ export default function App() {
 
   const connectedChannelCount =
     sources.filter((s) => s.enabled).length +
+    (targetCompanies.some((c) => c.enabled) ? 1 : 0) +
     (gmailConnected ? 1 : 0) +
     (slackConnected ? 1 : 0);
 
@@ -2571,7 +2898,7 @@ export default function App() {
         chatMessageCount={chatMessages.length}
         onOpenChat={() => setChatOpen(true)}
         onOpenIntake={openIntakeModal}
-        onOpenImport={() => setImportModalOpen(true)}
+        onOpenImport={() => openImportModal('roles')}
         userEmail={userEmail}
         userDisplayName={userDisplayName}
         onSignIn={openIntakeModal}
@@ -2589,7 +2916,7 @@ export default function App() {
           chatOpen={chatOpen}
           chatMessageCount={chatMessages.length}
           onToggleChat={() => setChatOpen((prev) => !prev)}
-          onOpenImport={() => setImportModalOpen(true)}
+          onOpenImport={() => openImportModal('roles')}
           onRunAgent={handleRunAgent}
           onOpenMobileMenu={() => setMobileNavOpen(true)}
         />
@@ -2608,6 +2935,8 @@ export default function App() {
               onThumbsUp={handleThumbsUp}
               onThumbsDown={handleThumbsDown}
               onRestoreJob={handleRestoreJob}
+              onDeleteJob={handleDeleteJob}
+              onMoveUntitledToTargetCompanies={handleMoveUntitledToTargetCompanies}
               onRunAgent={handleRunAgent}
               onRescoreActiveJobs={handleRescoreActiveJobs}
               initialTab={preferredTableTab}
@@ -2621,6 +2950,7 @@ export default function App() {
               onMoveStage={handleMoveStage}
               onThumbsUp={handleThumbsUp}
               onThumbsDown={handleThumbsDown}
+              onDeleteJob={handleDeleteJob}
             />
           )}
 
@@ -2678,7 +3008,14 @@ export default function App() {
               onScanWhatsApp={async (rawText, groupName) => {
                 await handleScanWhatsApp(rawText, groupName);
               }}
-              onOpenImportModal={() => setImportModalOpen(true)}
+              onOpenImportModal={() => openImportModal('roles')}
+              targetCompanies={targetCompanies}
+              untitledJobCount={untitledJobCount}
+              onAddTargetCompany={handleAddTargetCompany}
+              onToggleTargetCompany={handleToggleTargetCompany}
+              onDeleteTargetCompany={handleDeleteTargetCompany}
+              onOpenTargetCompaniesImport={() => openImportModal('companies')}
+              onMoveUntitledToTargetCompanies={handleMoveUntitledToTargetCompanies}
               onToggleAutoSchedule={() =>
                 void updateServerSchedule(!autoScheduleEnabled, autoScheduleMinutes)
               }
@@ -2736,6 +3073,7 @@ export default function App() {
               counts={{
                 jobs: jobs.length,
                 sources: sources.length,
+                targetCompanies: targetCompanies.length,
                 resumes: resumes.length,
                 rules: rules.length,
                 events: events.length,
@@ -2771,12 +3109,14 @@ export default function App() {
         initialAutoScheduleMinutes={autoScheduleMinutes}
         sources={sources}
         importedCountInSession={importedCountInSession}
+        targetCompaniesCount={targetCompanies.length}
         onSignInAccount={handleSignInAccount}
         onConnectGmail={() => handleConnectGmail(false)}
         onConnectSlack={handleConnectSlack}
         onSaveResume={handleSaveResume}
         onDeleteResume={handleDeleteResume}
-        onOpenImportModal={() => setImportModalOpen(true)}
+        onOpenImportModal={() => openImportModal('roles')}
+        onOpenTargetCompaniesImport={() => openImportModal('companies')}
         onUploadWhatsAppInIntake={handleScanWhatsApp}
         onClose={() => setIntakeOpen(false)}
         onCompleteIntake={handleCompleteIntake}
@@ -2785,9 +3125,11 @@ export default function App() {
       {/* CSV / JSON Upload & Column Mapper Modal */}
       <ImportRolesModal
         open={importModalOpen}
+        initialMode={importModalMode}
         existingHashes={jobs.map((j) => j.urlHash)}
         onClose={() => setImportModalOpen(false)}
         onImportJobs={handleImportJobs}
+        onImportTargetCompanies={handleImportTargetCompanies}
       />
 
       {/* Job Detail Slide-over Drawer */}
@@ -2810,6 +3152,7 @@ export default function App() {
         onThumbsUp={handleThumbsUp}
         onThumbsDown={handleThumbsDown}
         onRestoreJob={handleRestoreJob}
+        onDeleteJob={handleDeleteJob}
         onAddEvent={handleAddEvent}
       />
 

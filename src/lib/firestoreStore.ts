@@ -20,6 +20,7 @@ import type {
   FeedbackEntry,
   ImportBatchRecord,
   JobEvent,
+  JobEnrichmentPatch,
   JobRecord,
   JobSource,
   LearnedRule,
@@ -30,6 +31,7 @@ import type {
   NetworkingContactStatus,
   PipelineStage,
   RoleResume,
+  TargetCompany,
   UserIntakeProfile,
 } from '../types/job';
 
@@ -91,6 +93,7 @@ const VALID_ATS: AtsType[] = [
   'Slack',
   'WhatsApp',
   'CSV Import',
+  'Target Company',
 ];
 
 function validStage(s: unknown): PipelineStage {
@@ -205,6 +208,7 @@ export interface LoadedCloudWorkspace {
   events: JobEvent[];
   imports: ImportBatchRecord[];
   resumes: RoleResume[];
+  targetCompanies: TargetCompany[];
 }
 
 export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspace> {
@@ -231,6 +235,7 @@ export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspa
       events: [],
       imports: [],
       resumes: [],
+      targetCompanies: [],
     };
   }
 
@@ -268,16 +273,25 @@ export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspa
     }
   };
 
-  const [rawJobs, rawSources, rawRules, rawFeedback, rawEvents, rawImports, rawResumes] =
-    await Promise.all([
-      fetchSubcollection('jobs'),
-      fetchSubcollection('sources'),
-      fetchSubcollection('rules'),
-      fetchSubcollection('feedback'),
-      fetchSubcollection('events'),
-      fetchSubcollection('imports'),
-      fetchSubcollection('resumes'),
-    ]);
+  const [
+    rawJobs,
+    rawSources,
+    rawRules,
+    rawFeedback,
+    rawEvents,
+    rawImports,
+    rawResumes,
+    rawTargetCompanies,
+  ] = await Promise.all([
+    fetchSubcollection('jobs'),
+    fetchSubcollection('sources'),
+    fetchSubcollection('rules'),
+    fetchSubcollection('feedback'),
+    fetchSubcollection('events'),
+    fetchSubcollection('imports'),
+    fetchSubcollection('resumes'),
+    fetchSubcollection('targetCompanies'),
+  ]);
 
   const jobs: JobRecord[] = rawJobs.map((j) => ({
     id: String(j.id),
@@ -380,6 +394,16 @@ export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspa
     uploadedAt: clampStr(res.uploadedAt, 32, 'Recent'),
   }));
 
+  const targetCompanies: TargetCompany[] = rawTargetCompanies.map((c) => ({
+    id: String(c.id),
+    name: clampStr(c.name, 160),
+    careersUrl: typeof c.careersUrl === 'string' && c.careersUrl.trim() ? clampStr(c.careersUrl, 1000) : undefined,
+    notes: typeof c.notes === 'string' && c.notes.trim() ? clampStr(c.notes, 500) : undefined,
+    enabled: c.enabled !== false,
+    lastCheckedAt: clampStr(c.lastCheckedAt, 80, 'Not checked yet'),
+    lastFoundCount: typeof c.lastFoundCount === 'number' ? c.lastFoundCount : 0,
+  }));
+
   return {
     profileExists: true,
     profile,
@@ -395,6 +419,7 @@ export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspa
     events,
     imports,
     resumes,
+    targetCompanies,
   };
 }
 
@@ -702,6 +727,98 @@ export async function updateJobRescoreBatchInCloud(
   }
 }
 
+export async function deleteJobInCloud(uid: string, jobId: string): Promise<void> {
+  const id = safeId(jobId, 'job');
+  const path = `users/${uid}/jobs/${id}`;
+  try {
+    await deleteDoc(doc(db, 'users', uid, 'jobs', id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function deleteJobsBatchInCloud(uid: string, jobIds: string[]): Promise<void> {
+  if (jobIds.length === 0) return;
+  const basePath = `users/${uid}/jobs`;
+  try {
+    for (let i = 0; i < jobIds.length; i += 400) {
+      const slice = jobIds.slice(i, i + 400);
+      const batch = writeBatch(db);
+      for (const jobId of slice) {
+        const id = safeId(jobId, 'job');
+        batch.delete(doc(db, 'users', uid, 'jobs', id));
+      }
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, basePath);
+  }
+}
+
+export async function updateJobsEnrichmentBatchInCloud(
+  uid: string,
+  patches: (JobEnrichmentPatch & { previousMatchScore?: number })[]
+): Promise<void> {
+  if (patches.length === 0) return;
+  const basePath = `users/${uid}/jobs`;
+  try {
+    const batch = writeBatch(db);
+    for (const p of patches.slice(0, 400)) {
+      const id = safeId(p.id, 'job');
+      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      if (typeof p.title === 'string' && p.title.trim()) {
+        payload.title = clampStr(p.title.trim(), 200);
+      }
+      if (typeof p.companyDomain === 'string' && p.companyDomain.trim()) {
+        payload.companyDomain = clampStr(p.companyDomain.trim(), 160);
+      }
+      if (typeof p.salaryMin === 'number' && Number.isFinite(p.salaryMin)) {
+        payload.salaryMin = Math.max(0, Math.min(5000000, Math.round(p.salaryMin)));
+      }
+      if (typeof p.salaryMax === 'number' && Number.isFinite(p.salaryMax)) {
+        payload.salaryMax = Math.max(0, Math.min(5000000, Math.round(p.salaryMax)));
+      }
+      if (typeof p.salaryLabel === 'string' && p.salaryLabel.trim()) {
+        payload.salaryLabel = clampStr(p.salaryLabel.trim(), 80);
+      }
+      if (typeof p.location === 'string' && p.location.trim()) {
+        payload.location = clampStr(p.location.trim(), 160);
+      }
+      if (p.locationType && VALID_LOC_TYPES.includes(p.locationType)) {
+        payload.locationType = p.locationType;
+      }
+      if (typeof p.employmentType === 'string' && p.employmentType.trim()) {
+        payload.employmentType = clampStr(p.employmentType.trim(), 60);
+      }
+      if (typeof p.jobUrl === 'string' && p.jobUrl.trim()) {
+        payload.jobUrl = clampStr(p.jobUrl.trim(), 1000);
+      }
+      if (Array.isArray(p.skills) && p.skills.length > 0) {
+        payload.skills = clampStringList(p.skills, 25);
+      }
+      if (typeof p.summary === 'string' && p.summary.trim()) {
+        payload.summary = clampStr(p.summary.trim(), 2000);
+      }
+      if (typeof p.fullDescription === 'string' && p.fullDescription.trim()) {
+        payload.fullDescription = clampStr(p.fullDescription.trim(), 16000);
+      }
+      if (typeof p.matchScore === 'number') {
+        payload.matchScore = clampScore(p.matchScore);
+      }
+      if (typeof p.previousMatchScore === 'number') {
+        payload.previousMatchScore = clampScore(p.previousMatchScore);
+      }
+      if (typeof p.matchReason === 'string' && p.matchReason.trim()) {
+        payload.matchReason = clampStr(p.matchReason.trim(), 600);
+      }
+      batch.update(doc(db, 'users', uid, 'jobs', id), payload);
+    }
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, basePath);
+  }
+}
+
 export async function createSourceInCloud(uid: string, source: JobSource): Promise<void> {
   const id = safeId(source.id, 'src');
   const path = `users/${uid}/sources/${id}`;
@@ -977,6 +1094,101 @@ export async function deleteRoleResumeInCloud(
   const path = `users/${uid}/resumes/${id}`;
   try {
     await deleteDoc(doc(db, 'users', uid, 'resumes', id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function createTargetCompaniesBatchInCloud(
+  uid: string,
+  companies: TargetCompany[]
+): Promise<void> {
+  if (companies.length === 0) return;
+  const basePath = `users/${uid}/targetCompanies`;
+  try {
+    for (let i = 0; i < companies.length; i += 400) {
+      const slice = companies.slice(i, i + 400);
+      const batch = writeBatch(db);
+      for (const company of slice) {
+        const id = safeId(company.id, 'tc');
+        const data: Record<string, unknown> = {
+          id,
+          ownerId: uid,
+          name: clampStr(company.name || 'Target Company', 160) || 'Target Company',
+          enabled: company.enabled !== false,
+          lastCheckedAt: clampStr(company.lastCheckedAt || 'Pending first pull', 80),
+          lastFoundCount: Math.max(0, Math.round(company.lastFoundCount || 0)),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+        if (company.careersUrl && company.careersUrl.trim()) {
+          data.careersUrl = clampStr(company.careersUrl.trim(), 1000);
+        }
+        if (company.notes && company.notes.trim()) {
+          data.notes = clampStr(company.notes.trim(), 500);
+        }
+        batch.set(doc(db, 'users', uid, 'targetCompanies', id), data);
+      }
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, basePath);
+  }
+}
+
+export async function updateTargetCompanyInCloud(
+  uid: string,
+  companyId: string,
+  patch: { name?: string; careersUrl?: string; notes?: string; enabled?: boolean }
+): Promise<void> {
+  const id = safeId(companyId, 'tc');
+  const path = `users/${uid}/targetCompanies/${id}`;
+  const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+  if (typeof patch.name === 'string' && patch.name.trim()) {
+    payload.name = clampStr(patch.name.trim(), 160);
+  }
+  if (typeof patch.careersUrl === 'string') {
+    payload.careersUrl = clampStr(patch.careersUrl.trim(), 1000);
+  }
+  if (typeof patch.notes === 'string') {
+    payload.notes = clampStr(patch.notes.trim(), 500);
+  }
+  if (typeof patch.enabled === 'boolean') {
+    payload.enabled = patch.enabled;
+  }
+  try {
+    await updateDoc(doc(db, 'users', uid, 'targetCompanies', id), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function updateTargetCompanyMetricsInCloud(
+  uid: string,
+  companyId: string,
+  metrics: { lastCheckedAt: string; lastFoundCount: number }
+): Promise<void> {
+  const id = safeId(companyId, 'tc');
+  const path = `users/${uid}/targetCompanies/${id}`;
+  try {
+    await updateDoc(doc(db, 'users', uid, 'targetCompanies', id), {
+      lastCheckedAt: clampStr(metrics.lastCheckedAt, 80),
+      lastFoundCount: Math.max(0, Math.round(metrics.lastFoundCount || 0)),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function deleteTargetCompanyInCloud(
+  uid: string,
+  companyId: string
+): Promise<void> {
+  const id = safeId(companyId, 'tc');
+  const path = `users/${uid}/targetCompanies/${id}`;
+  try {
+    await deleteDoc(doc(db, 'users', uid, 'targetCompanies', id));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }

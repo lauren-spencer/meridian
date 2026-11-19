@@ -114,7 +114,7 @@ ${dislikes ? `- ${dislikes}` : '- None yet'}
 INSTRUCTIONS:
 - Return one object per job matching its exact "id".
 - Adjust matchScore decisively upward if the role closely resembles Recent Likes and satisfies all Active Rules.
-- Penalize matchScore decisively downward if the role violates an Active Rule or shares attributes with Recent Dislikes (e.g., travel, onsite/hybrid, wrong seniority, low pay, wrong stack).
+- Penalize matchScore decisively downward if the role violates an Active Rule or shares attributes with Recent Dislikes (e.g., wrong employment type, low pay, company fit, wrong role type, location).
 - Write a crisp 1-sentence matchReason citing the concrete criteria or feedback alignment.
 
 JOBS TO RE-SCORE:

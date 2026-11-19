@@ -17,15 +17,15 @@ export type AtsType =
   | 'Gmail'
   | 'Slack'
   | 'WhatsApp'
-  | 'CSV Import';
+  | 'CSV Import'
+  | 'Target Company';
 
 export type DislikeReason =
-  | 'Wrong seniority'
+  | 'Wrong employment type'
   | 'Low pay'
-  | 'Not remote'
-  | 'Wrong stack'
-  | 'Too much travel'
-  | 'Company fit';
+  | 'Company fit'
+  | 'Wrong role type'
+  | 'Location';
 
 export type WorkspaceView =
   | 'table'
@@ -196,6 +196,34 @@ export interface JobSource {
   lastNewCount: number;
 }
 
+export interface TargetCompany {
+  id: string;
+  name: string;
+  careersUrl?: string;
+  notes?: string;
+  enabled: boolean;
+  lastCheckedAt: string;
+  lastFoundCount: number;
+}
+
+export interface JobEnrichmentPatch {
+  id: string;
+  title?: string;
+  companyDomain?: string;
+  salaryMin?: number | null;
+  salaryMax?: number | null;
+  salaryLabel?: string;
+  location?: string;
+  locationType?: LocationType;
+  employmentType?: string;
+  jobUrl?: string;
+  skills?: string[];
+  summary?: string;
+  fullDescription?: string;
+  matchScore?: number;
+  matchReason?: string;
+}
+
 export interface FeedbackEntry {
   id: string;
   jobId: string;
@@ -249,6 +277,7 @@ export interface AgentRunReport {
   totalFetched: number;
   totalSkipped: number;
   totalAdded: number;
+  enrichedCount?: number;
   sourceResults: AgentSourceRunResult[];
 }
 

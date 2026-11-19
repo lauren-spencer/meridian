@@ -5,7 +5,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer as createViteServer } from 'vite';
-import { fetchFullJobDescriptionFromUrl } from './src/lib/agentRunner.ts';
+import {
+  fetchFullJobDescriptionFromUrl,
+  type IncompleteJobCandidate,
+} from './src/lib/agentRunner.ts';
 import {
   rescoreJobsWithFeedback,
   synthesizePreferencesWithGemini,
@@ -34,6 +37,7 @@ import type {
   JobSource,
   RoleResume,
   TailoredResumeDocument,
+  TargetCompany,
 } from './src/types/job.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -60,28 +64,39 @@ async function startServer() {
 
   // Sync latest workspace criteria/sources/hashes to server-side background scheduler
   app.post('/api/workspace/sync', (req, res) => {
-    const { sources, existingHashes, searchPrompt, rules, recentFeedback } =
-      req.body as {
-        sources?: JobSource[];
-        existingHashes?: string[];
-        searchPrompt?: string;
-        rules?: { text: string; active: boolean }[];
-        recentFeedback?: {
-          jobTitle: string;
-          company: string;
-          vote: 'up' | 'down';
-          reason?: DislikeReason;
-        }[];
-      };
+    const {
+      sources,
+      targetCompanies,
+      incompleteJobs,
+      existingHashes,
+      searchPrompt,
+      rules,
+      recentFeedback,
+    } = req.body as {
+      sources?: JobSource[];
+      targetCompanies?: TargetCompany[];
+      incompleteJobs?: IncompleteJobCandidate[];
+      existingHashes?: string[];
+      searchPrompt?: string;
+      rules?: { text: string; active: boolean }[];
+      recentFeedback?: {
+        jobTitle: string;
+        company: string;
+        vote: 'up' | 'down';
+        reason?: DislikeReason;
+      }[];
+    };
 
-    if (Array.isArray(sources)) {
+    if (Array.isArray(sources) || Array.isArray(targetCompanies)) {
       realtimeHub.syncWorkspaceContext({
-        sources,
+        sources: Array.isArray(sources) ? sources : [],
+        targetCompanies: Array.isArray(targetCompanies) ? targetCompanies : [],
+        incompleteJobs: Array.isArray(incompleteJobs) ? incompleteJobs : [],
         existingHashes: Array.isArray(existingHashes) ? existingHashes : [],
         searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
         rules: Array.isArray(rules) ? rules : [],
         recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
-        maxNewPerRun: 6,
+        maxNewPerRun: 8,
       });
     }
 
@@ -95,6 +110,8 @@ async function startServer() {
       intervalMinutes?: number;
       context?: {
         sources: JobSource[];
+        targetCompanies?: TargetCompany[];
+        incompleteJobs?: IncompleteJobCandidate[];
         existingHashes: string[];
         searchPrompt: string;
         rules: { text: string; active: boolean }[];
@@ -113,6 +130,12 @@ async function startServer() {
       context: context
         ? {
             sources: Array.isArray(context.sources) ? context.sources : [],
+            targetCompanies: Array.isArray(context.targetCompanies)
+              ? context.targetCompanies
+              : [],
+            incompleteJobs: Array.isArray(context.incompleteJobs)
+              ? context.incompleteJobs
+              : [],
             existingHashes: Array.isArray(context.existingHashes)
               ? context.existingHashes
               : [],
@@ -121,7 +144,7 @@ async function startServer() {
             recentFeedback: Array.isArray(context.recentFeedback)
               ? context.recentFeedback
               : [],
-            maxNewPerRun: 6,
+            maxNewPerRun: 8,
           }
         : undefined,
     });
@@ -170,11 +193,13 @@ async function startServer() {
     }
   });
 
-  // Live ATS / Markdown Agent Runner (broadcasts updates via SSE)
+  // Live ATS / Markdown / Target Company Agent Runner + Incomplete Role Enrichment
   app.post('/api/agent/run', async (req, res) => {
     try {
       const {
         sources,
+        targetCompanies,
+        incompleteJobs,
         existingHashes,
         searchPrompt,
         rules,
@@ -182,6 +207,8 @@ async function startServer() {
         maxNewPerRun,
       } = req.body as {
         sources?: JobSource[];
+        targetCompanies?: TargetCompany[];
+        incompleteJobs?: IncompleteJobCandidate[];
         existingHashes?: string[];
         searchPrompt?: string;
         rules?: { text: string; active: boolean }[];
@@ -194,19 +221,27 @@ async function startServer() {
         maxNewPerRun?: number;
       };
 
-      if (!Array.isArray(sources) || sources.length === 0) {
-        res.status(400).json({ error: 'At least one enabled source is required.' });
+      const hasSources = Array.isArray(sources) && sources.length > 0;
+      const hasCompanies = Array.isArray(targetCompanies) && targetCompanies.some((c) => c.enabled);
+      const hasIncomplete = Array.isArray(incompleteJobs) && incompleteJobs.length > 0;
+
+      if (!hasSources && !hasCompanies && !hasIncomplete) {
+        res.status(400).json({
+          error: 'At least one enabled source, target company, or incomplete role to enrich is required.',
+        });
         return;
       }
 
       const output = await realtimeHub.executeRun(
         {
-          sources,
+          sources: Array.isArray(sources) ? sources : [],
+          targetCompanies: Array.isArray(targetCompanies) ? targetCompanies : [],
+          incompleteJobs: Array.isArray(incompleteJobs) ? incompleteJobs : [],
           existingHashes: Array.isArray(existingHashes) ? existingHashes : [],
           searchPrompt: typeof searchPrompt === 'string' ? searchPrompt : '',
           rules: Array.isArray(rules) ? rules : [],
           recentFeedback: Array.isArray(recentFeedback) ? recentFeedback : [],
-          maxNewPerRun: typeof maxNewPerRun === 'number' ? maxNewPerRun : 6,
+          maxNewPerRun: typeof maxNewPerRun === 'number' ? maxNewPerRun : 8,
         },
         'manual'
       );
@@ -296,7 +331,7 @@ async function startServer() {
     }
   });
 
-  // Gmail Read-Only Job Scanner (LinkedIn, Kellogg, 12twenty)
+  // Gmail Read-Only Job Scanner (LinkedIn & configured job alert senders)
   app.post('/api/gmail/scan', async (req, res) => {
     try {
       const authHeader = req.headers.authorization;

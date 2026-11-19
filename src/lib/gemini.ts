@@ -70,7 +70,7 @@ const CHAT_RESPONSE_SCHEMA = {
           reason: {
             type: Type.STRING,
             description:
-              'Optional dislike reason for vote="down". Must be one of: "Wrong seniority", "Low pay", "Not remote", "Wrong stack", "Too much travel", "Company fit".',
+              'Optional dislike reason for vote="down". Must be one of: "Wrong employment type", "Low pay", "Company fit", "Wrong role type", "Location".',
           },
           stage: {
             type: Type.STRING,
@@ -121,7 +121,7 @@ Your job is to help the user refine what roles they are looking for, record feed
 Behavior guidelines:
 - Be concise, direct, and grounded in the user's actual workspace state below.
 - When the user asks to change what they are looking for (e.g., salary floor, remote preference, tech stack, seniority, company stage), emit an "update_criteria_prompt" action with a cleanly rewritten full criteria prompt preserving their other unchanged preferences, AND/OR emit an "add_rule" action for crisp hard constraints.
-- When the user gives feedback on a specific listed role (e.g., "hide the Solutions Architect role, too much travel" or "save the Kestrel query engine job"), match it to its exact jobId below and emit a "log_feedback" action (or "move_job_stage" if they ask to move it to applied/interviewing/offer).
+- When the user gives feedback on a specific listed role (e.g., "hide the Solutions Architect role, wrong role type" or "save the Kestrel query engine job"), match it to its exact jobId below and emit a "log_feedback" action (or "move_job_stage" if they ask to move it to applied/interviewing/offer).
 - When the user asks to remove or pause an existing rule, reference its exact ruleId below.
 - Only invent actions when the user clearly requests or confirms a change; if they are just asking a question or brainstorming, return an empty actions array and answer thoughtfully.
 - Keep replies crisp (2–4 sentences unless summarizing multiple roles).

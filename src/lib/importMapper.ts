@@ -80,7 +80,7 @@ Allowed targetField values (use exact strings):
 - skills (comma-separated tags, tech stack, keywords)
 - summary (job description or role summary)
 - notes (personal notes, referral contact, comments)
-- sourceName (job board or referral source, e.g., LinkedIn, 12twenty, Greenhouse)
+- sourceName (job board or referral source, e.g., LinkedIn, Indeed, Greenhouse)
 - ignore (if column does not map cleanly or is redundant)
 
 Try not to map two columns to the same targetField unless needed (prefer mapping the best column and setting duplicates to ignore or notes).

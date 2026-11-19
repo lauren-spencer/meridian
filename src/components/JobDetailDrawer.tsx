@@ -71,6 +71,7 @@ interface JobDetailDrawerProps {
   onThumbsUp: (jobId: string) => void;
   onThumbsDown: (jobId: string, reason?: DislikeReason) => void;
   onRestoreJob: (jobId: string) => void;
+  onDeleteJob: (jobId: string) => void;
   onAddEvent: (event: Omit<JobEvent, 'id'>) => void;
 }
 
@@ -329,11 +330,13 @@ export function JobDetailDrawer({
   onThumbsUp,
   onThumbsDown,
   onRestoreJob,
+  onDeleteJob,
   onAddEvent,
 }: JobDetailDrawerProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'networking'>('overview');
   const [notesDraft, setNotesDraft] = useState('');
   const [dislikeOpen, setDislikeOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   // Full job description UI state
   const [jdExpanded, setJdExpanded] = useState(true);
@@ -390,6 +393,7 @@ export function JobDetailDrawer({
       setEditingJd(false);
       setJdExpanded(true);
       setDislikeOpen(false);
+      setConfirmDelete(false);
       setShowAddContact(false);
       setNetworkingStatusFilter('all');
       setNetworkingSentimentFilter('all');
@@ -899,49 +903,87 @@ export function JobDetailDrawer({
             </div>
 
             <div className="flex items-center gap-2 relative">
-              {job.stage === 'archived' ? (
-                <button
-                  type="button"
-                  onClick={() => onRestoreJob(job.id)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-zinc-50 rounded-md cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Restore to Saved</span>
-                </button>
-              ) : (
-                <>
+              {confirmDelete ? (
+                <div className="inline-flex items-center gap-1.5">
+                  <span className="text-xs text-red-700 font-medium">Delete role?</span>
                   <button
                     type="button"
-                    onClick={() => onThumbsUp(job.id)}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-colors cursor-pointer ${
-                      job.feedback === 'up'
-                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                        : 'bg-white text-zinc-700 border-zinc-200 hover:bg-emerald-50 hover:text-emerald-800'
-                    }`}
+                    onClick={() => {
+                      setConfirmDelete(false);
+                      onDeleteJob(job.id);
+                    }}
+                    className="px-2.5 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 rounded-md cursor-pointer"
                   >
-                    <ThumbsUp className="w-3.5 h-3.5" />
-                    <span>{job.feedback === 'up' ? 'Upvoted' : 'Thumbs Up'}</span>
+                    Confirm
                   </button>
-
-                  <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDelete(false)}
+                    className="px-2 py-1 text-xs text-zinc-500 hover:text-zinc-900 rounded-md cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <>
+                  {job.stage === 'archived' ? (
                     <button
                       type="button"
-                      onClick={() => setDislikeOpen((v) => !v)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 rounded-md transition-colors cursor-pointer"
+                      onClick={() => onRestoreJob(job.id)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-zinc-50 rounded-md cursor-pointer"
                     >
-                      <ThumbsDown className="w-3.5 h-3.5" />
-                      <span>Hide</span>
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Restore to Saved</span>
                     </button>
-                    {dislikeOpen && (
-                      <DislikeReasonPopover
-                        onSelect={(reason) => {
-                          setDislikeOpen(false);
-                          onThumbsDown(job.id, reason);
-                        }}
-                        onClose={() => setDislikeOpen(false)}
-                      />
-                    )}
-                  </div>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => onThumbsUp(job.id)}
+                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-colors cursor-pointer ${
+                          job.feedback === 'up'
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                            : 'bg-white text-zinc-700 border-zinc-200 hover:bg-emerald-50 hover:text-emerald-800'
+                        }`}
+                      >
+                        <ThumbsUp className="w-3.5 h-3.5" />
+                        <span>{job.feedback === 'up' ? 'Upvoted' : 'Thumbs Up'}</span>
+                      </button>
+
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => setDislikeOpen((v) => !v)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 rounded-md transition-colors cursor-pointer"
+                        >
+                          <ThumbsDown className="w-3.5 h-3.5" />
+                          <span>Hide</span>
+                        </button>
+                        {dislikeOpen && (
+                          <DislikeReasonPopover
+                            onSelect={(reason) => {
+                              setDislikeOpen(false);
+                              onThumbsDown(job.id, reason);
+                            }}
+                            onClose={() => setDislikeOpen(false)}
+                          />
+                        )}
+                      </div>
+                    </>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDislikeOpen(false);
+                      setConfirmDelete(true);
+                    }}
+                    title="Delete role permanently"
+                    aria-label="Delete role"
+                    className="p-1.5 text-zinc-400 hover:text-red-600 hover:bg-red-50 border border-transparent hover:border-red-200 rounded-md transition-colors cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </>
               )}
             </div>
@@ -1032,7 +1074,7 @@ export function JobDetailDrawer({
             {resumes.length === 0 ? (
               <div className="p-3.5 bg-zinc-50/80 border border-zinc-200 rounded-lg space-y-2.5">
                 <p className="text-xs text-zinc-600 leading-relaxed">
-                  Upload a role-specific base resume (e.g., PM, PMM, Strategy) to generate a tailored 1-page <span className="font-mono text-zinc-800">.docx</span> with edits highlighted in red.
+                  Upload a role-specific base resume as a <span className="font-mono text-zinc-800">.docx</span> file (PDFs take longer to parse) to generate a tailored 1-page <span className="font-mono text-zinc-800">.docx</span> with edits highlighted in red.
                 </p>
                 <div className="flex flex-wrap items-center gap-2">
                   <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-zinc-900 hover:bg-zinc-800 rounded-md cursor-pointer">
@@ -1040,11 +1082,11 @@ export function JobDetailDrawer({
                     <span>
                       {isQuickUploadingResume
                         ? 'Reading resume...'
-                        : 'Upload Resume (.docx / .pdf)'}
+                        : 'Upload .docx Resume'}
                     </span>
                     <input
                       type="file"
-                      accept=".docx,.pdf,.txt,.md"
+                      accept=".docx,.txt,.md,.pdf"
                       disabled={isQuickUploadingResume}
                       onChange={(e) => void handleQuickUploadResume(e)}
                       className="sr-only"

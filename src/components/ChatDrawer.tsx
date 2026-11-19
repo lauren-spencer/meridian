@@ -20,7 +20,7 @@ interface ChatDrawerProps {
 
 const STARTER_PROMPTS = [
   'Raise my minimum salary to $200k and require fully remote roles.',
-  'Hide the Solutions Architect role at Veridian — too much travel.',
+  'Hide the Solutions Architect role at Veridian — wrong role type.',
   'Review my recent likes and dislikes and suggest a sharper filter rule.',
   'Move Staff Distributed Systems Engineer at Veridian to Saved.',
 ];

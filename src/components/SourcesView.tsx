@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   AlertCircle,
+  Building2,
   Check,
   CheckCircle2,
   Copy,
@@ -24,7 +25,12 @@ import {
   GMAIL_SENDER_PRESETS,
   normalizeSenderInput,
 } from '../lib/intakeHelpers';
-import type { AgentRunReport, ImportBatchRecord, JobSource } from '../types/job';
+import type {
+  AgentRunReport,
+  ImportBatchRecord,
+  JobSource,
+  TargetCompany,
+} from '../types/job';
 import { GoogleSignInButton } from './GoogleSignInButton';
 
 interface SourcesViewProps {
@@ -73,6 +79,14 @@ interface SourcesViewProps {
   onScanWhatsApp: (rawText: string, groupName: string) => Promise<void>;
   // Import existing roles modal
   onOpenImportModal: () => void;
+  // Target Companies watchlist
+  targetCompanies: TargetCompany[];
+  untitledJobCount: number;
+  onAddTargetCompany: (name: string, careersUrl?: string, notes?: string) => void;
+  onToggleTargetCompany: (companyId: string) => void;
+  onDeleteTargetCompany: (companyId: string) => void;
+  onOpenTargetCompaniesImport: () => void;
+  onMoveUntitledToTargetCompanies: () => void;
   // Scheduler & ATS source handlers
   onToggleAutoSchedule: () => void;
   onChangeAutoScheduleMinutes: (minutes: number) => void;
@@ -132,6 +146,13 @@ export function SourcesView({
   onChangeWhatsAppGroups,
   onScanWhatsApp,
   onOpenImportModal,
+  targetCompanies,
+  untitledJobCount,
+  onAddTargetCompany,
+  onToggleTargetCompany,
+  onDeleteTargetCompany,
+  onOpenTargetCompaniesImport,
+  onMoveUntitledToTargetCompanies,
   onToggleAutoSchedule,
   onChangeAutoScheduleMinutes,
   onAddSource,
@@ -143,6 +164,11 @@ export function SourcesView({
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [cadenceHours, setCadenceHours] = useState(4);
+
+  // Target Company manual add form
+  const [tcName, setTcName] = useState('');
+  const [tcUrl, setTcUrl] = useState('');
+  const [tcNotes, setTcNotes] = useState('');
 
   // Gmail sender management
   const [senderInput, setSenderInput] = useState('');
@@ -248,7 +274,18 @@ export function SourcesView({
     setCadenceHours(4);
   };
 
+  const handleAddTargetCompanySubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanName = tcName.trim();
+    if (!cleanName) return;
+    onAddTargetCompany(cleanName, tcUrl.trim() || undefined, tcNotes.trim() || undefined);
+    setTcName('');
+    setTcUrl('');
+    setTcNotes('');
+  };
+
   const activeCount = sources.filter((s) => s.enabled).length;
+  const activeTargetCompaniesCount = targetCompanies.filter((c) => c.enabled).length;
   const nextRunFormatted = formatNextRun(nextScheduledRunAt);
   const webhookUrl =
     typeof window !== 'undefined'
@@ -535,60 +572,73 @@ export function SourcesView({
               </div>
             )}
 
-            {(showSlackSetup || (!slackConfigured && !slackConnected)) && (
-              <div className="p-3 bg-zinc-50 border border-zinc-200 rounded-md text-[11.5px] text-zinc-600 space-y-2">
+            {showSlackSetup && (
+              <div className="p-3.5 bg-zinc-50 border border-zinc-200 rounded-md text-[11.5px] text-zinc-600 space-y-2.5">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-zinc-900">Slack App OAuth Setup</span>
-                  <div className="flex items-center gap-3 font-mono text-[10.5px]">
-                    <span className={slackHasClientId ? 'text-emerald-700' : 'text-amber-700'}>
-                      ID: {slackHasClientId ? 'OK' : 'Missing'}
+                  <span className="font-semibold text-zinc-900">How to Set Up Slack</span>
+                  {slackHasClientId && slackHasClientSecret && (
+                    <span className="text-[11px] font-medium text-emerald-700">
+                      Credentials configured
                     </span>
-                    <span className={slackHasClientSecret ? 'text-emerald-700' : 'text-amber-700'}>
-                      Secret: {slackHasClientSecret ? 'OK' : 'Missing'}
-                    </span>
-                  </div>
+                  )}
                 </div>
-                <p>
-                  Set <code className="font-mono text-zinc-800">SLACK_CLIENT_ID</code> and{' '}
-                  <code className="font-mono text-zinc-800">SLACK_CLIENT_SECRET</code> in Secrets, add User Token Scopes{' '}
-                  <code className="font-mono text-zinc-800">channels:read, channels:history, groups:read, groups:history</code>, and register these Redirect URLs in Slack:
-                </p>
-                <div className="space-y-1.5">
-                  {[
-                    {
-                      label: 'Active / Dev URL',
-                      value:
-                        slackDevRedirectUri ||
-                        slackRedirectUri ||
-                        `${window.location.origin}/api/slack/callback`,
-                    },
-                    ...(slackSharedRedirectUri &&
-                    slackSharedRedirectUri !== slackDevRedirectUri
-                      ? [{ label: 'Shared URL', value: slackSharedRedirectUri }]
-                      : []),
-                  ].map((item) => (
-                    <div key={item.value} className="space-y-0.5">
-                      <div className="text-[10.5px] text-zinc-500">{item.label}</div>
-                      <div className="flex items-center gap-1.5">
-                        <div className="flex-1 font-mono text-[11px] bg-white border border-zinc-200 rounded px-2 py-1 text-zinc-800 break-all select-all">
-                          {item.value}
+                <ol className="list-decimal pl-4 space-y-1.5 leading-relaxed">
+                  <li>
+                    Create an app at{' '}
+                    <a
+                      href="https://api.slack.com/apps"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-600 hover:underline font-medium"
+                    >
+                      api.slack.com/apps
+                    </a>{' '}
+                    (<strong>From scratch</strong>) for your workspace.
+                  </li>
+                  <li>
+                    Under <strong>OAuth &amp; Permissions</strong>, add User Token Scopes{' '}
+                    <code className="font-mono text-zinc-800">channels:read, channels:history, groups:read, groups:history</code> and register this Redirect URL:
+                    <div className="mt-1.5 space-y-1.5">
+                      {[
+                        {
+                          label: 'Redirect URL',
+                          value:
+                            slackDevRedirectUri ||
+                            slackRedirectUri ||
+                            `${window.location.origin}/api/slack/callback`,
+                        },
+                        ...(slackSharedRedirectUri &&
+                        slackSharedRedirectUri !== slackDevRedirectUri
+                          ? [{ label: 'Alternate URL', value: slackSharedRedirectUri }]
+                          : []),
+                      ].map((item) => (
+                        <div key={item.value} className="space-y-0.5">
+                          <div className="text-[10.5px] text-zinc-500">{item.label}</div>
+                          <div className="flex items-center gap-1.5">
+                            <div className="flex-1 font-mono text-[11px] bg-white border border-zinc-200 rounded px-2 py-1 text-zinc-800 break-all select-all">
+                              {item.value}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => copyText(item.value)}
+                              title="Copy callback URL"
+                              className="p-1.5 bg-white border border-zinc-200 hover:bg-zinc-100 rounded text-zinc-600 cursor-pointer shrink-0"
+                            >
+                              {copiedUrl === item.value ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => copyText(item.value)}
-                          title="Copy callback URL"
-                          className="p-1.5 bg-white border border-zinc-200 hover:bg-zinc-100 rounded text-zinc-600 cursor-pointer shrink-0"
-                        >
-                          {copiedUrl === item.value ? (
-                            <Check className="w-3.5 h-3.5 text-emerald-600" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5" />
-                          )}
-                        </button>
-                      </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </li>
+                  <li>
+                    Copy your <strong>Client ID</strong> and <strong>Client Secret</strong> from <strong>Basic Information</strong> into your environment variables (<code className="font-mono text-zinc-800">SLACK_CLIENT_ID</code> &amp; <code className="font-mono text-zinc-800">SLACK_CLIENT_SECRET</code>), redeploy, then click <strong>Connect Slack</strong>.
+                  </li>
+                </ol>
               </div>
             )}
           </div>
@@ -604,28 +654,32 @@ export function SourcesView({
                 <RefreshCw className={`w-3.5 h-3.5 ${isSlackScanning ? 'animate-spin' : ''}`} />
                 <span>{isSlackScanning ? 'Scanning Slack...' : 'Scan Slack Channels'}</span>
               </button>
+            ) : slackConfigured ? (
+              <button
+                type="button"
+                onClick={onConnectSlack}
+                className="px-3 py-1.5 text-xs font-medium text-white bg-zinc-900 hover:bg-zinc-800 rounded-md cursor-pointer"
+              >
+                Connect Slack
+              </button>
             ) : (
               <button
                 type="button"
-                onClick={() => {
-                  if (slackConfigured) {
-                    onConnectSlack();
-                  } else {
-                    setShowSlackSetup((v) => !v);
-                  }
-                }}
+                onClick={() => setShowSlackSetup((v) => !v)}
                 className="px-3 py-1.5 text-xs font-medium text-zinc-800 bg-white border border-zinc-300 hover:bg-zinc-50 rounded-md cursor-pointer"
               >
-                {slackConfigured ? 'Connect Slack' : 'Slack OAuth Setup'}
+                {showSlackSetup ? 'Hide Setup Steps' : 'How to Set Up Slack'}
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => setShowSlackSetup((v) => !v)}
-              className="text-xs text-zinc-500 hover:text-zinc-900 cursor-pointer"
-            >
-              {showSlackSetup ? 'Hide details' : 'Callback URLs'}
-            </button>
+            {(slackConnected || slackConfigured) && (
+              <button
+                type="button"
+                onClick={() => setShowSlackSetup((v) => !v)}
+                className="text-xs text-zinc-500 hover:text-zinc-900 cursor-pointer"
+              >
+                {showSlackSetup ? 'Hide steps' : 'Setup guide'}
+              </button>
+            )}
           </div>
         </section>
 
@@ -797,6 +851,175 @@ export function SourcesView({
         </button>
       </section>
 
+      {/* 3b. Target Companies Watchlist (CSV Upload + Manual Add) */}
+      <section className="bg-white border border-zinc-200 rounded-lg p-5 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <Building2 className="w-4 h-4 text-blue-600 shrink-0" />
+              <h2 className="text-sm font-semibold text-zinc-950">
+                Target Companies Watchlist
+              </h2>
+              <span className="text-xs font-mono text-zinc-500 tabular-nums">
+                {activeTargetCompaniesCount} active
+              </span>
+            </div>
+            <p className="text-xs text-zinc-500 max-w-2xl leading-relaxed">
+              List dream companies even when no specific role is open yet. On every agent pull, Meridian checks these companies&apos; careers pages and job boards for your desired role types.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {untitledJobCount > 0 && (
+              <button
+                type="button"
+                onClick={onMoveUntitledToTargetCompanies}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-md whitespace-nowrap cursor-pointer"
+              >
+                <Building2 className="w-3.5 h-3.5" />
+                <span>Move {untitledJobCount} &ldquo;Untitled Role&rdquo; rows here</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onOpenTargetCompaniesImport}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-zinc-900 bg-white border border-zinc-300 hover:bg-zinc-50 rounded-md whitespace-nowrap cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>Upload Companies CSV</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Inline Add Target Company Form */}
+        <form
+          onSubmit={handleAddTargetCompanySubmit}
+          className="grid grid-cols-1 md:grid-cols-12 gap-2.5 pt-1"
+        >
+          <input
+            type="text"
+            required
+            value={tcName}
+            onChange={(e) => setTcName(e.target.value)}
+            placeholder="Company name (e.g., Anthropic, Stripe, Airbnb)"
+            className="md:col-span-4 h-9 px-3 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+          />
+          <input
+            type="text"
+            value={tcUrl}
+            onChange={(e) => setTcUrl(e.target.value)}
+            placeholder="Optional careers URL (auto-discovered if blank)"
+            className="md:col-span-4 h-9 px-3 text-xs font-mono bg-white border border-zinc-200 rounded-md text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+          />
+          <input
+            type="text"
+            value={tcNotes}
+            onChange={(e) => setTcNotes(e.target.value)}
+            placeholder="Optional notes (e.g., Target AI PM)"
+            className="md:col-span-2 h-9 px-3 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+          />
+          <button
+            type="submit"
+            className="md:col-span-2 inline-flex items-center justify-center gap-1.5 h-9 px-3 text-xs font-medium text-white bg-zinc-900 hover:bg-zinc-800 rounded-md whitespace-nowrap cursor-pointer"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Add Company</span>
+          </button>
+        </form>
+
+        {targetCompanies.length === 0 ? (
+          <div className="py-6 px-4 text-center border border-dashed border-zinc-200 rounded-md text-xs text-zinc-500">
+            No target companies added yet. Add one above or upload a CSV list of companies you want Meridian to monitor.
+          </div>
+        ) : (
+          <div className="border border-zinc-200 rounded-md overflow-hidden">
+            <div className="overflow-x-auto max-h-72 overflow-y-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-zinc-50/80 border-b border-zinc-200 text-[11px] font-medium text-zinc-500">
+                    <th className="py-2 pl-3.5 pr-2">Company</th>
+                    <th className="py-2 px-2">Notes</th>
+                    <th className="py-2 px-2 whitespace-nowrap">Last Checked</th>
+                    <th className="py-2 px-2 text-right whitespace-nowrap">Roles Found</th>
+                    <th className="py-2 pl-2 pr-3.5 text-right whitespace-nowrap">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-100">
+                  {targetCompanies.map((tc) => (
+                    <tr key={tc.id} className="hover:bg-zinc-50/70">
+                      <td className="py-2.5 pl-3.5 pr-2">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`font-medium ${
+                              tc.enabled ? 'text-zinc-950' : 'text-zinc-400 line-through'
+                            }`}
+                          >
+                            {tc.name}
+                          </span>
+                          {!tc.enabled && (
+                            <span className="text-[10.5px] text-zinc-400">Paused</span>
+                          )}
+                        </div>
+                        {tc.careersUrl ? (
+                          <a
+                            href={tc.careersUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-[11px] font-mono text-zinc-400 hover:text-blue-600 truncate max-w-[240px]"
+                          >
+                            <span className="truncate">{tc.careersUrl}</span>
+                            <ExternalLink className="w-2.5 h-2.5 shrink-0" />
+                          </a>
+                        ) : (
+                          <div className="text-[11px] text-zinc-400">
+                            Auto-discover careers &amp; job boards
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-2 text-zinc-500 max-w-[200px] truncate">
+                        {tc.notes || '—'}
+                      </td>
+                      <td className="py-2.5 px-2 font-mono text-zinc-500 whitespace-nowrap tabular-nums">
+                        {tc.lastCheckedAt || 'Pending pull'}
+                      </td>
+                      <td className="py-2.5 px-2 text-right font-mono text-zinc-700 tabular-nums">
+                        {tc.lastFoundCount ?? 0}
+                      </td>
+                      <td className="py-2.5 pl-2 pr-3.5 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => onToggleTargetCompany(tc.id)}
+                            title={tc.enabled ? 'Pause watching' : 'Resume watching'}
+                            aria-label={tc.enabled ? `Pause ${tc.name}` : `Resume ${tc.name}`}
+                            className="p-1 text-zinc-400 hover:text-zinc-900 rounded cursor-pointer"
+                          >
+                            {tc.enabled ? (
+                              <Pause className="w-3.5 h-3.5" />
+                            ) : (
+                              <Play className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDeleteTargetCompany(tc.id)}
+                            title="Remove target company"
+                            aria-label={`Remove ${tc.name}`}
+                            className="p-1 text-zinc-400 hover:text-red-600 rounded cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </section>
+
       {/* 4. Add Career Source Form */}
       <form
         onSubmit={handleSubmit}
@@ -901,7 +1124,7 @@ export function SourcesView({
             Scheduled Server Runs &amp; Live Auto-Updates
           </div>
           <p className="text-xs text-zinc-500 mt-0.5">
-            Runs enabled ATS sources on the server and pushes new roles into open tabs in real time.
+            Runs enabled ATS sources, monitors your Target Companies Watchlist, and enriches incomplete roles with missing fields in real time.
             {autoScheduleEnabled && nextRunFormatted && (
               <span className="ml-1.5 font-mono text-zinc-800 tabular-nums">
                 Next run: {nextRunFormatted}

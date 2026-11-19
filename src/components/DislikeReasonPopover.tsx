@@ -2,12 +2,11 @@ import React, { useEffect, useRef } from 'react';
 import { DislikeReason } from '../types/job';
 
 const DISLIKE_REASONS: DislikeReason[] = [
-  'Wrong seniority',
+  'Wrong employment type',
   'Low pay',
-  'Not remote',
-  'Wrong stack',
-  'Too much travel',
   'Company fit',
+  'Wrong role type',
+  'Location',
 ];
 
 interface DislikeReasonPopoverProps {

@@ -42,23 +42,10 @@ export const GMAIL_SENDER_PRESETS: GmailSenderPreset[] = [
     sender: 'builtin.com',
     description: 'Tech hub job roundups',
   },
-  {
-    label: '12twenty / Campus Career',
-    sender: '12twenty.com',
-    description: 'University career portal & recruiting deadlines',
-  },
-  {
-    label: 'Kellogg Career',
-    sender: 'kellogg.northwestern.edu',
-    description: 'Kellogg recruiting newsletters & events',
-  },
 ];
 
 export const DEFAULT_GMAIL_SENDERS: string[] = [
   'jobalerts-noreply@linkedin.com',
-  'messages-noreply@linkedin.com',
-  'alert@indeed.com',
-  'wellfound.com',
 ];
 
 export const DEFAULT_SLACK_CHANNELS: string[] = [

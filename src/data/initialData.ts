@@ -753,7 +753,7 @@ Compensation & Benefits
 - Base salary: $145,000 – $165,000 USD.`,
     notes: '',
     feedback: 'down',
-    dislikeReason: 'Wrong seniority',
+    dislikeReason: 'Wrong role type',
   },
   {
     id: 'job-114',
@@ -795,7 +795,7 @@ Compensation & Benefits
 - Base salary: $175,000 – $195,000 USD + travel per diem.`,
     notes: '',
     feedback: 'down',
-    dislikeReason: 'Too much travel',
+    dislikeReason: 'Location',
   },
 ];
 
@@ -853,7 +853,7 @@ export const INITIAL_FEEDBACK: FeedbackEntry[] = [
     jobTitle: 'Backend Engineer II (Java / Spring)',
     company: 'Bramble Financial',
     vote: 'down',
-    reason: 'Wrong seniority',
+    reason: 'Wrong role type',
     createdAt: 'Nov 12',
   },
   {
@@ -862,7 +862,7 @@ export const INITIAL_FEEDBACK: FeedbackEntry[] = [
     jobTitle: 'Field Platform Engineer',
     company: 'Loomis Data',
     vote: 'down',
-    reason: 'Too much travel',
+    reason: 'Location',
     createdAt: 'Nov 13',
   },
   {
