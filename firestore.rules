@@ -46,6 +46,12 @@ service cloud.firestore {
         (val.size() == 0 || (val[0] is string && val[0].size() <= 120));
     }
 
+    function isBoundedPairKeyList(val, maxItems) {
+      return val is list &&
+        val.size() <= maxItems &&
+        (val.size() == 0 || (val[0] is string && val[0].size() <= 260));
+    }
+
     function parentUserExists(userId) {
       return exists(/databases/$(database)/documents/users/$(userId));
     }
@@ -64,7 +70,7 @@ service cloud.firestore {
           'roleTypes', 'locations', 'workModes', 'keywords', 'employmentTypes',
           'searchPrompt', 'gmailQuery', 'gmailSenders', 'slackChannels', 'whatsappGroups',
           'autoScheduleEnabled', 'autoScheduleMinutes',
-          'careerContextNotes', 'careerExperiences',
+          'careerContextNotes', 'careerExperiences', 'dismissedDuplicatePairs',
           'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.uid) &&
@@ -89,6 +95,7 @@ service cloud.firestore {
         data.autoScheduleMinutes <= 1440 &&
         (!('careerContextNotes' in data) || isBoundedString(data.careerContextNotes, 0, 15000)) &&
         (!('careerExperiences' in data) || (data.careerExperiences is list && data.careerExperiences.size() <= 30)) &&
+        (!('dismissedDuplicatePairs' in data) || isBoundedPairKeyList(data.dismissedDuplicatePairs, 200)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -377,6 +384,10 @@ service cloud.firestore {
           // Action 3: Update extended career context & off-resume experiences
           incoming().diff(existing()).affectedKeys().hasOnly([
             'careerContextNotes', 'careerExperiences', 'updatedAt'
+          ]) ||
+          // Action 4: Update dismissed non-duplicate job pairs
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'dismissedDuplicatePairs', 'updatedAt'
           ])
         );
 

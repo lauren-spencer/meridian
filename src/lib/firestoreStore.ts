@@ -219,6 +219,7 @@ export interface LoadedCloudWorkspace {
   resumes: RoleResume[];
   coverLetterSamples: CoverLetterSample[];
   targetCompanies: TargetCompany[];
+  dismissedDuplicatePairs: string[];
 }
 
 export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspace> {
@@ -247,6 +248,7 @@ export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspa
       resumes: [],
       coverLetterSamples: [],
       targetCompanies: [],
+      dismissedDuplicatePairs: [],
     };
   }
 
@@ -447,6 +449,7 @@ export async function loadUserWorkspace(uid: string): Promise<LoadedCloudWorkspa
     resumes,
     coverLetterSamples,
     targetCompanies,
+    dismissedDuplicatePairs: clampStringList(p.dismissedDuplicatePairs, 200, 260),
   };
 }
 
@@ -571,6 +574,22 @@ export async function updateWorkspaceSettingsInCloud(
 
   try {
     await updateDoc(ref, payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function updateDismissedDuplicatePairsInCloud(
+  uid: string,
+  pairs: string[]
+): Promise<void> {
+  const path = `users/${uid}`;
+  const ref = doc(db, 'users', uid);
+  try {
+    await updateDoc(ref, {
+      dismissedDuplicatePairs: clampStringList(pairs, 200, 260),
+      updatedAt: serverTimestamp(),
+    });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }

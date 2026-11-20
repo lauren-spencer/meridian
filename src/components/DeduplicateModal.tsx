@@ -6,6 +6,8 @@ import {
   Layers,
   Loader2,
   MessageSquare,
+  RotateCcw,
+  Unlink2,
   Users,
   X,
 } from 'lucide-react';
@@ -18,7 +20,10 @@ import {
 interface DeduplicateModalProps {
   open: boolean;
   groups: DuplicateJobGroup[];
+  dismissedCount?: number;
   onClose: () => void;
+  onMarkNotDuplicates: (group: DuplicateJobGroup) => void;
+  onResetDismissed?: () => void;
   onConfirmMerge: (
     selections: { primaryId: string; duplicateIds: string[] }[]
   ) => Promise<void>;
@@ -43,23 +48,39 @@ const PRIORITY_LABEL: Record<string, string> = {
 export function DeduplicateModal({
   open,
   groups,
+  dismissedCount = 0,
   onClose,
+  onMarkNotDuplicates,
+  onResetDismissed,
   onConfirmMerge,
 }: DeduplicateModalProps) {
   const [selectedGroups, setSelectedGroups] = useState<Record<string, boolean>>({});
   const [primaryByGroup, setPrimaryByGroup] = useState<Record<string, string>>({});
   const [isMerging, setIsMerging] = useState(false);
 
+  // Initialize selections when opening, and preserve existing choices as individual clusters are dismissed
   useEffect(() => {
     if (!open) return;
-    const nextSelected: Record<string, boolean> = {};
-    const nextPrimary: Record<string, string> = {};
-    for (const group of groups) {
-      nextSelected[group.groupId] = true;
-      nextPrimary[group.groupId] = group.recommendedPrimaryId;
-    }
-    setSelectedGroups(nextSelected);
-    setPrimaryByGroup(nextPrimary);
+    setSelectedGroups((prev) => {
+      const next: Record<string, boolean> = {};
+      for (const group of groups) {
+        next[group.groupId] =
+          group.groupId in prev ? prev[group.groupId] : true;
+      }
+      return next;
+    });
+    setPrimaryByGroup((prev) => {
+      const next: Record<string, string> = {};
+      for (const group of groups) {
+        const existingChoice = prev[group.groupId];
+        const stillInGroup =
+          existingChoice && group.jobs.some((j) => j.id === existingChoice);
+        next[group.groupId] = stillInGroup
+          ? existingChoice
+          : group.recommendedPrimaryId;
+      }
+      return next;
+    });
   }, [open, groups]);
 
   const summary = useMemo(() => {
@@ -130,7 +151,7 @@ export function DeduplicateModal({
               </h2>
             </div>
             <p className="mt-1 text-xs text-zinc-500 leading-relaxed">
-              Notes, networking contacts, priorities, salaries, deadlines, descriptions, links, and calendar events from removed duplicates are merged into the kept role so nothing is lost.
+              Grouped by <strong className="font-medium text-zinc-700">same role title at the same company</strong>. Merge clusters into one record without losing notes, contacts, or pipeline stage — or mark any cluster as <strong className="font-medium text-zinc-700">Not duplicates</strong> to keep them separate permanently.
             </p>
           </div>
           <button
@@ -149,16 +170,29 @@ export function DeduplicateModal({
           <div className="px-6 py-14 text-center">
             <CopyCheck className="w-8 h-8 text-emerald-600 mx-auto mb-3" />
             <p className="text-sm font-medium text-zinc-900">
-              No duplicate roles found
+              No duplicate roles to review
             </p>
             <p className="mt-1 text-xs text-zinc-500">
-              All roles in your workspace appear to be unique.
+              All active duplicate clusters have been merged or marked as distinct roles.
             </p>
+            {dismissedCount > 0 && onResetDismissed && (
+              <button
+                type="button"
+                onClick={onResetDismissed}
+                className="mt-4 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-700 bg-zinc-100 hover:bg-zinc-200 rounded-md cursor-pointer transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>
+                  Review {dismissedCount} previously dismissed{' '}
+                  {dismissedCount === 1 ? 'pair' : 'pairs'}
+                </span>
+              </button>
+            )}
           </div>
         ) : (
           <>
             {/* Select all strip */}
-            <div className="px-6 py-2.5 bg-zinc-50 border-b border-zinc-200 flex items-center justify-between text-xs">
+            <div className="px-6 py-2.5 bg-zinc-50 border-b border-zinc-200 flex flex-wrap items-center justify-between gap-2 text-xs">
               <label className="inline-flex items-center gap-2 text-zinc-700 cursor-pointer select-none">
                 <input
                   type="checkbox"
@@ -167,7 +201,7 @@ export function DeduplicateModal({
                   className="rounded border-zinc-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
                 />
                 <span className="font-medium">
-                  Select all {groups.length} duplicate {groups.length === 1 ? 'group' : 'groups'}
+                  Select all {groups.length} duplicate {groups.length === 1 ? 'cluster' : 'clusters'}
                 </span>
               </label>
               <span className="text-zinc-500 font-mono">
@@ -188,11 +222,11 @@ export function DeduplicateModal({
                     className={`border rounded-lg transition-colors ${
                       isGroupChecked
                         ? 'border-zinc-200 bg-white'
-                        : 'border-zinc-200/70 bg-zinc-50/50 opacity-70'
+                        : 'border-zinc-200/70 bg-zinc-50/50 opacity-75'
                     }`}
                   >
                     {/* Group header */}
-                    <div className="px-4 py-2.5 bg-zinc-50/80 border-b border-zinc-100 flex items-center justify-between gap-3">
+                    <div className="px-4 py-2.5 bg-zinc-50/80 border-b border-zinc-100 flex flex-wrap items-center justify-between gap-3">
                       <label className="inline-flex items-center gap-2.5 min-w-0 cursor-pointer">
                         <input
                           type="checkbox"
@@ -213,9 +247,22 @@ export function DeduplicateModal({
                           {group.jobs.length} copies
                         </span>
                       </label>
-                      <span className="text-[11px] font-medium text-zinc-500 whitespace-nowrap shrink-0">
-                        {group.reason}
-                      </span>
+
+                      <div className="flex items-center gap-3 shrink-0">
+                        <span className="text-[11px] font-medium text-zinc-500 whitespace-nowrap hidden sm:inline">
+                          {group.reason}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={isMerging}
+                          onClick={() => onMarkNotDuplicates(group)}
+                          title="Keep all roles in this cluster separate and stop flagging them as duplicates"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-zinc-700 bg-white border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-100 hover:text-zinc-950 rounded-md transition-colors cursor-pointer disabled:opacity-50"
+                        >
+                          <Unlink2 className="w-3 h-3 text-zinc-500" />
+                          <span>Not duplicates</span>
+                        </button>
+                      </div>
                     </div>
 
                     {/* Copies inside group */}
@@ -280,6 +327,14 @@ export function DeduplicateModal({
                                 <span className="font-mono">{job.discoveredAt}</span>
                                 <span>·</span>
                                 <span className="font-mono">{job.matchScore}% match</span>
+                                {job.location &&
+                                  job.location.toLowerCase() !== 'unspecified' &&
+                                  job.location.toLowerCase() !== 'not listed' && (
+                                    <>
+                                      <span>·</span>
+                                      <span>{job.location}</span>
+                                    </>
+                                  )}
                                 {job.priority && (
                                   <>
                                     <span>·</span>
@@ -346,15 +401,29 @@ export function DeduplicateModal({
         )}
 
         {/* Footer */}
-        <div className="px-6 py-3.5 border-t border-zinc-200 bg-zinc-50/70 flex items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={isMerging}
-            className="px-3.5 py-2 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-zinc-50 rounded-md cursor-pointer disabled:opacity-50"
-          >
-            Cancel
-          </button>
+        <div className="px-6 py-3.5 border-t border-zinc-200 bg-zinc-50/70 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isMerging}
+              className="px-3.5 py-2 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-zinc-50 rounded-md cursor-pointer disabled:opacity-50"
+            >
+              {groups.length === 0 ? 'Done' : 'Cancel'}
+            </button>
+
+            {groups.length > 0 && dismissedCount > 0 && onResetDismissed && (
+              <button
+                type="button"
+                onClick={onResetDismissed}
+                disabled={isMerging}
+                className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-800 cursor-pointer disabled:opacity-50"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Reset {dismissedCount} dismissed</span>
+              </button>
+            )}
+          </div>
 
           {groups.length > 0 && (
             <button

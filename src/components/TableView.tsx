@@ -442,7 +442,7 @@ export function TableView({
               <strong className="font-semibold text-zinc-950">
                 {duplicateExtraCount} duplicate {duplicateExtraCount === 1 ? 'role' : 'roles'} detected
               </strong>{' '}
-              across {duplicateGroupCount} {duplicateGroupCount === 1 ? 'group' : 'groups'} (same posting link or role &amp; company). Review and merge them into single clean entries without losing notes, contacts, or pipeline stage.
+              across {duplicateGroupCount} {duplicateGroupCount === 1 ? 'cluster' : 'clusters'} (same role title at the same company). Review to merge into single clean entries or mark clusters as not duplicates.
             </p>
           </div>
           <button

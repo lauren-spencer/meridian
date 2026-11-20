@@ -94,32 +94,6 @@ const TITLE_STOP_WORDS = new Set([
   'states',
 ]);
 
-const SENIORITY_TOKENS = new Set([
-  'intern',
-  'internship',
-  'co-op',
-  'coop',
-  'junior',
-  'jr',
-  'associate',
-  'senior',
-  'sr',
-  'staff',
-  'principal',
-  'lead',
-  'manager',
-  'director',
-  'vp',
-  'head',
-  'chief',
-  'executive',
-  'entry',
-  'fellow',
-  'fellowship',
-  'analyst',
-  'consultant',
-]);
-
 const STAGE_PRIORITY: Record<PipelineStage, number> = {
   offer: 600,
   interviewing: 500,
@@ -263,20 +237,6 @@ function extractYears(normalizedTitle: string): string[] {
   return matches ? Array.from(new Set(matches)).sort() : [];
 }
 
-function extractSenioritySet(tokens: string[]): Set<string> {
-  const set = new Set<string>();
-  for (const t of tokens) {
-    if (SENIORITY_TOKENS.has(t)) {
-      // Normalize jr/sr/internship variants
-      if (t === 'jr') set.add('junior');
-      else if (t === 'sr') set.add('senior');
-      else if (t === 'internship' || t === 'co-op' || t === 'coop') set.add('intern');
-      else set.add(t);
-    }
-  }
-  return set;
-}
-
 /**
  * Generates deterministic multi-signal deduplication keys for a job record.
  * Used both client-side and server-side inside `existingHashes` so scanners across
@@ -360,33 +320,35 @@ export function registerDedupeKeys(
   }
 }
 
-export type DuplicateMatchReason =
-  | 'Same posting URL'
-  | 'Same role & company'
-  | 'Near-identical title at same company';
+export function makeDuplicatePairKey(idA: string, idB: string): string {
+  const a = idA.trim().slice(0, 128);
+  const b = idB.trim().slice(0, 128);
+  return a <= b ? `${a}::${b}` : `${b}::${a}`;
+}
+
+export function buildDismissedPairKeysForCluster(jobIds: string[]): string[] {
+  const uniqueIds = Array.from(new Set(jobIds.map((id) => id.trim()).filter(Boolean)));
+  const pairs: string[] = [];
+  for (let i = 0; i < uniqueIds.length; i++) {
+    for (let j = i + 1; j < uniqueIds.length; j++) {
+      pairs.push(makeDuplicatePairKey(uniqueIds[i], uniqueIds[j]));
+    }
+  }
+  return pairs;
+}
+
+export type DuplicateMatchReason = 'Same role title & company';
 
 /**
  * Pairwise comparison to determine whether two jobs represent the same role.
- * Designed for high precision so distinct roles at the same company (e.g. 2026 vs 2027,
- * Intern vs Senior Manager, Strategy vs Finance) are NOT falsely merged.
+ * Strictly based on same normalized role title at the same normalized company
+ * (including word-order-invariant exact token matches such as
+ * "2027 Summer MBA Intern" vs "MBA Summer Intern 2027").
  */
 export function detectDuplicatePairReason(
   a: Pick<JobRecord, 'urlHash' | 'jobUrl' | 'company' | 'title'>,
   b: Pick<JobRecord, 'urlHash' | 'jobUrl' | 'company' | 'title'>
 ): DuplicateMatchReason | null {
-  // 1. Exact urlHash match
-  if (a.urlHash && b.urlHash && a.urlHash === b.urlHash) {
-    return 'Same posting URL';
-  }
-
-  // 2. Canonical URL match (handles LinkedIn /comm/jobs/view, tracking query params, trailing slashes)
-  const urlA = canonicalizeJobUrl(a.jobUrl);
-  const urlB = canonicalizeJobUrl(b.jobUrl);
-  if (urlA && urlB && urlA === urlB) {
-    return 'Same posting URL';
-  }
-
-  // 3. Company + Title match
   const compA = normalizeCompanyKey(a.company);
   const compB = normalizeCompanyKey(b.company);
   if (!compA || !compB || compA !== compB) {
@@ -400,10 +362,10 @@ export function detectDuplicatePairReason(
   }
 
   if (titleA === titleB) {
-    return 'Same role & company';
+    return 'Same role title & company';
   }
 
-  // Guard 1: Do not merge if explicit years conflict (e.g. 2026 vs 2027)
+  // Guard: Do not match if explicit years conflict (e.g. 2026 vs 2027)
   const yearsA = extractYears(titleA);
   const yearsB = extractYears(titleB);
   if (yearsA.length > 0 && yearsB.length > 0 && yearsA.join(',') !== yearsB.join(',')) {
@@ -416,38 +378,11 @@ export function detectDuplicatePairReason(
     return null;
   }
 
-  // Exact word-order-invariant match (e.g. "2027 Summer MBA Intern" vs "MBA Summer Intern 2027")
+  // Exact word-order-invariant title match (e.g. "2027 Summer MBA Intern" vs "MBA Summer Intern 2027")
   const sortedA = [...tokensA].sort().join(' ');
   const sortedB = [...tokensB].sort().join(' ');
   if (sortedA === sortedB) {
-    return 'Same role & company';
-  }
-
-  // Guard 2: Do not merge if seniority levels conflict (e.g. "Product Manager" vs "Senior Product Manager")
-  const senA = extractSenioritySet(tokensA);
-  const senB = extractSenioritySet(tokensB);
-  if (senA.size !== senB.size || [...senA].some((s) => !senB.has(s))) {
-    return null;
-  }
-
-  // Guard 3: High token Jaccard overlap (>= 0.80) or clean subset (e.g. extra city suffix) with >= 3 shared tokens
-  const setA = new Set(tokensA);
-  const setB = new Set(tokensB);
-  let shared = 0;
-  for (const tok of setA) {
-    if (setB.has(tok)) shared += 1;
-  }
-  const unionSize = setA.size + setB.size - shared;
-  const jaccard = unionSize > 0 ? shared / unionSize : 0;
-
-  if (jaccard >= 0.8 && shared >= 2) {
-    return 'Near-identical title at same company';
-  }
-
-  const minSize = Math.min(setA.size, setB.size);
-  const maxSize = Math.max(setA.size, setB.size);
-  if (shared === minSize && minSize >= 3 && maxSize - minSize <= 2) {
-    return 'Near-identical title at same company';
+    return 'Same role title & company';
   }
 
   return null;
@@ -457,9 +392,19 @@ export function findMatchingExistingJob(
   candidate: Pick<JobRecord, 'urlHash' | 'jobUrl' | 'company' | 'title'>,
   existingJobs: JobRecord[]
 ): JobRecord | undefined {
+  const candidateUrl = canonicalizeJobUrl(candidate.jobUrl);
   for (const existing of existingJobs) {
     if (detectDuplicatePairReason(candidate, existing)) {
       return existing;
+    }
+    if (candidate.urlHash && existing.urlHash && candidate.urlHash === existing.urlHash) {
+      return existing;
+    }
+    if (candidateUrl) {
+      const existingUrl = canonicalizeJobUrl(existing.jobUrl);
+      if (existingUrl && existingUrl === candidateUrl) {
+        return existing;
+      }
     }
   }
   return undefined;
@@ -515,15 +460,22 @@ export interface DuplicateJobGroup {
 }
 
 /**
- * Clusters all duplicate jobs using Union-Find so transitive matches (A~B, B~C)
- * are cleanly grouped together, and recommends the richest/furthest-along record to keep.
+ * Clusters duplicate jobs strictly by same normalized role title at the same normalized company,
+ * excluding any pairs explicitly marked by the user as "Not duplicates".
  */
-export function findDuplicateJobGroups(jobs: JobRecord[]): DuplicateJobGroup[] {
+export function findDuplicateJobGroups(
+  jobs: JobRecord[],
+  dismissedPairs?: Set<string> | string[]
+): DuplicateJobGroup[] {
   const n = jobs.length;
   if (n < 2) return [];
 
+  const dismissedSet =
+    dismissedPairs instanceof Set
+      ? dismissedPairs
+      : new Set(Array.isArray(dismissedPairs) ? dismissedPairs : []);
+
   const parent = Array.from({ length: n }, (_, i) => i);
-  const groupReason = new Map<number, DuplicateMatchReason>();
 
   const find = (x: number): number => {
     while (parent[x] !== x) {
@@ -533,60 +485,34 @@ export function findDuplicateJobGroups(jobs: JobRecord[]): DuplicateJobGroup[] {
     return x;
   };
 
-  const union = (a: number, b: number, reason: DuplicateMatchReason) => {
+  const union = (a: number, b: number) => {
     const ra = find(a);
     const rb = find(b);
     if (ra === rb) return;
     parent[rb] = ra;
-    const existing = groupReason.get(ra) ?? groupReason.get(rb);
-    // Prefer strongest reason label
-    if (!existing || reason === 'Same posting URL') {
-      groupReason.set(ra, reason);
-    } else {
-      groupReason.set(ra, existing);
-    }
   };
 
-  // Fast index by urlHash, canonicalUrl, and companyKey to avoid O(n^2) across different companies
-  const byHash = new Map<string, number>();
-  const byUrl = new Map<string, number>();
+  // Group strictly by same normalized company + same normalized role title
   const byCompany = new Map<string, number[]>();
 
   for (let i = 0; i < n; i++) {
     const job = jobs[i];
-
-    if (job.urlHash && job.urlHash.trim()) {
-      const h = job.urlHash.trim();
-      const prev = byHash.get(h);
-      if (prev !== undefined) {
-        union(prev, i, 'Same posting URL');
-      } else {
-        byHash.set(h, i);
-      }
-    }
-
-    const canonUrl = canonicalizeJobUrl(job.jobUrl);
-    if (canonUrl) {
-      const prev = byUrl.get(canonUrl);
-      if (prev !== undefined) {
-        union(prev, i, 'Same posting URL');
-      } else {
-        byUrl.set(canonUrl, i);
-      }
-    }
-
     const compKey = normalizeCompanyKey(job.company);
-    if (compKey) {
-      const list = byCompany.get(compKey) ?? [];
-      for (const prevIdx of list) {
-        const reason = detectDuplicatePairReason(jobs[prevIdx], job);
-        if (reason) {
-          union(prevIdx, i, reason);
-        }
+    if (!compKey) continue;
+
+    const list = byCompany.get(compKey) ?? [];
+    for (const prevIdx of list) {
+      const prevJob = jobs[prevIdx];
+      if (dismissedSet.has(makeDuplicatePairKey(prevJob.id, job.id))) {
+        continue;
       }
-      list.push(i);
-      byCompany.set(compKey, list);
+      const reason = detectDuplicatePairReason(prevJob, job);
+      if (reason) {
+        union(prevIdx, i);
+      }
     }
+    list.push(i);
+    byCompany.set(compKey, list);
   }
 
   const clusters = new Map<number, JobRecord[]>();
@@ -598,7 +524,7 @@ export function findDuplicateJobGroups(jobs: JobRecord[]): DuplicateJobGroup[] {
   }
 
   const groups: DuplicateJobGroup[] = [];
-  for (const [root, clusterJobs] of clusters.entries()) {
+  for (const clusterJobs of clusters.values()) {
     if (clusterJobs.length < 2) continue;
 
     // Sort cluster so the strongest primary candidate is first
@@ -610,7 +536,7 @@ export function findDuplicateJobGroups(jobs: JobRecord[]): DuplicateJobGroup[] {
 
     groups.push({
       groupId: `dup-${sorted[0].id}`,
-      reason: groupReason.get(root) ?? 'Same role & company',
+      reason: 'Same role title & company',
       recommendedPrimaryId: sorted[0].id,
       jobs: sorted,
     });

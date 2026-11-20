@@ -45,6 +45,7 @@ import {
   loadUserWorkspace,
   saveUserProfileToCloud,
   updateCareerContextInCloud,
+  updateDismissedDuplicatePairsInCloud,
   updateJobAttributesInCloud,
   updateJobDetailsInCloud,
   updateJobFullDescriptionInCloud,
@@ -80,12 +81,14 @@ import {
 } from './lib/intakeHelpers';
 import { detectIsMbaRole, normalizeEmploymentType } from './lib/resumeClient';
 import {
+  buildDismissedPairKeysForCluster,
   buildExistingDedupeTokens,
   computeMergedDuplicateJob,
   findDuplicateJobGroups,
   findMatchingExistingJob,
   normalizeCompanyKey,
 } from './lib/jobDedupe';
+import type { DuplicateJobGroup } from './lib/jobDedupe';
 import {
   AgentRunReport,
   AiRuleSuggestion,
@@ -319,6 +322,7 @@ interface PersistedState {
   intakeProfile: UserIntakeProfile;
   gmailQueryOverride: string;
   gmailLastScanLabel: string | null;
+  dismissedDuplicatePairs?: string[];
 }
 
 const LEGACY_MOCK_SOURCE_IDS = new Set([
@@ -414,6 +418,9 @@ function loadInitialState(): PersistedState {
             : defaultIntake,
           gmailQueryOverride: parsed.gmailQueryOverride ?? '',
           gmailLastScanLabel: parsed.gmailLastScanLabel ?? null,
+          dismissedDuplicatePairs: Array.isArray(parsed.dismissedDuplicatePairs)
+            ? parsed.dismissedDuplicatePairs.filter((x): x is string => typeof x === 'string')
+            : [],
         };
       }
     }
@@ -445,6 +452,7 @@ function loadInitialState(): PersistedState {
     },
     gmailQueryOverride: '',
     gmailLastScanLabel: null,
+    dismissedDuplicatePairs: [],
   };
 }
 
@@ -471,6 +479,9 @@ export default function App() {
   const [rules, setRules] = useState<LearnedRule[]>(initial.rules);
   const [dismissedReasons, setDismissedReasons] = useState<DislikeReason[]>(
     initial.dismissedReasons
+  );
+  const [dismissedDuplicatePairs, setDismissedDuplicatePairs] = useState<string[]>(
+    initial.dismissedDuplicatePairs ?? []
   );
   const [lastRunLabel, setLastRunLabel] = useState<string>(initial.lastRunLabel);
   const [runHistory, setRunHistory] = useState<AgentRunReport[]>(initial.runHistory);
@@ -720,6 +731,9 @@ export default function App() {
               }
               setAutoScheduleEnabled(cloud.autoScheduleEnabled);
               setAutoScheduleMinutes(cloud.autoScheduleMinutes);
+              if (Array.isArray(cloud.dismissedDuplicatePairs)) {
+                setDismissedDuplicatePairs(cloud.dismissedDuplicatePairs);
+              }
               if (cloud.profile.onboardingCompleted) {
                 setIntakeOpen(false);
               }
@@ -780,6 +794,7 @@ export default function App() {
         intakeProfile,
         gmailQueryOverride,
         gmailLastScanLabel,
+        dismissedDuplicatePairs,
       };
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch {
@@ -805,6 +820,7 @@ export default function App() {
     intakeProfile,
     gmailQueryOverride,
     gmailLastScanLabel,
+    dismissedDuplicatePairs,
   ]);
 
   // Idempotent application of completed agent / Gmail / Slack / WhatsApp runs
@@ -2669,8 +2685,11 @@ export default function App() {
     );
   };
 
-  // Duplicate role detection & zero-loss smart merge
-  const duplicateGroups = useMemo(() => findDuplicateJobGroups(jobs), [jobs]);
+  // Duplicate role detection (same role title at same company) & zero-loss smart merge
+  const duplicateGroups = useMemo(
+    () => findDuplicateJobGroups(jobs, dismissedDuplicatePairs),
+    [jobs, dismissedDuplicatePairs]
+  );
   const duplicateExtraCount = useMemo(
     () =>
       duplicateGroups.reduce(
@@ -2685,11 +2704,42 @@ export default function App() {
   );
 
   const handleOpenDeduplicate = () => {
-    if (duplicateGroups.length === 0) {
+    if (duplicateGroups.length === 0 && dismissedDuplicatePairs.length === 0) {
       pushToast(`No duplicates found — all ${jobs.length} roles are unique.`);
       return;
     }
     setDedupeModalOpen(true);
+  };
+
+  const handleMarkNotDuplicates = (group: DuplicateJobGroup) => {
+    const newPairKeys = buildDismissedPairKeysForCluster(group.jobs.map((j) => j.id));
+    if (newPairKeys.length === 0) return;
+
+    const addedSet = new Set(newPairKeys);
+    const nextPairs = Array.from(
+      new Set([...dismissedDuplicatePairs, ...newPairKeys])
+    ).slice(0, 200);
+
+    setDismissedDuplicatePairs(nextPairs);
+    persistCloud((uid) => updateDismissedDuplicatePairsInCloud(uid, nextPairs));
+
+    pushToast(
+      `Marked "${group.jobs[0].title}" at ${group.jobs[0].company} as not duplicates`,
+      'Undo',
+      () => {
+        setDismissedDuplicatePairs((prev) => {
+          const reverted = prev.filter((k) => !addedSet.has(k));
+          persistCloud((uid) => updateDismissedDuplicatePairsInCloud(uid, reverted));
+          return reverted;
+        });
+      }
+    );
+  };
+
+  const handleResetDismissedDuplicates = () => {
+    setDismissedDuplicatePairs([]);
+    persistCloud((uid) => updateDismissedDuplicatePairsInCloud(uid, []));
+    pushToast('Reset dismissed duplicate clusters — all matching clusters are shown again');
   };
 
   const handleMergeDuplicates = async (
@@ -3762,7 +3812,10 @@ export default function App() {
       <DeduplicateModal
         open={dedupeModalOpen}
         groups={duplicateGroups}
+        dismissedCount={dismissedDuplicatePairs.length}
         onClose={() => setDedupeModalOpen(false)}
+        onMarkNotDuplicates={handleMarkNotDuplicates}
+        onResetDismissed={handleResetDismissedDuplicates}
         onConfirmMerge={handleMergeDuplicates}
       />
 
