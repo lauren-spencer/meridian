@@ -151,7 +151,7 @@ export function DeduplicateModal({
               </h2>
             </div>
             <p className="mt-1 text-xs text-zinc-500 leading-relaxed">
-              Grouped by <strong className="font-medium text-zinc-700">same role title at the same company</strong>. Merge clusters into one record without losing notes, contacts, or pipeline stage — or mark any cluster as <strong className="font-medium text-zinc-700">Not duplicates</strong> to keep them separate permanently.
+              Grouped by <strong className="font-medium text-zinc-700">same or similar role title at the same company</strong> (roles at different companies are never treated as duplicates). Merge clusters without losing notes, contacts, or pipeline stage — or mark any cluster as <strong className="font-medium text-zinc-700">Not duplicates</strong> to keep them separate permanently.
             </p>
           </div>
           <button

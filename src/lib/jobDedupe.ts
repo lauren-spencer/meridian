@@ -94,6 +94,45 @@ const TITLE_STOP_WORDS = new Set([
   'states',
 ]);
 
+const TITLE_ABBREVIATIONS: Record<string, string> = {
+  ops: 'operations',
+  mgmt: 'management',
+  mgt: 'management',
+  corp: 'corporate',
+  intl: 'international',
+  strat: 'strategy',
+  tech: 'technology',
+  mktg: 'marketing',
+  biz: 'business',
+  dev: 'development',
+  fin: 'finance',
+  comm: 'commercial',
+  sr: 'senior',
+  jr: 'junior',
+};
+
+const SENIORITY_TOKENS = new Set([
+  'intern',
+  'internship',
+  'co-op',
+  'coop',
+  'junior',
+  'associate',
+  'senior',
+  'staff',
+  'principal',
+  'lead',
+  'manager',
+  'director',
+  'vp',
+  'head',
+  'chief',
+  'executive',
+  'entry',
+  'fellow',
+  'fellowship',
+]);
+
 const STAGE_PRIORITY: Record<PipelineStage, number> = {
   offer: 600,
   interviewing: 500,
@@ -225,9 +264,20 @@ export function normalizeTitleKey(rawTitle?: string | null): string {
   return cleaned;
 }
 
+function canonicalizeTitleToken(tok: string): string {
+  const expanded = TITLE_ABBREVIATIONS[tok] ?? tok;
+  if (expanded.length > 5 && expanded.endsWith('ies')) {
+    return `${expanded.slice(0, -3)}y`;
+  }
+  if (expanded.length > 4 && expanded.endsWith('s') && !expanded.endsWith('ss') && !expanded.endsWith('us')) {
+    return expanded.slice(0, -1);
+  }
+  return expanded;
+}
+
 function extractTitleTokens(normalizedTitle: string): string[] {
   if (!normalizedTitle) return [];
-  const raw = normalizedTitle.split(' ').filter(Boolean);
+  const raw = normalizedTitle.split(' ').filter(Boolean).map(canonicalizeTitleToken);
   const meaningful = raw.filter((tok) => tok.length > 1 && !TITLE_STOP_WORDS.has(tok));
   return meaningful.length > 0 ? meaningful : raw;
 }
@@ -235,6 +285,36 @@ function extractTitleTokens(normalizedTitle: string): string[] {
 function extractYears(normalizedTitle: string): string[] {
   const matches = normalizedTitle.match(/\b20\d{2}\b/g);
   return matches ? Array.from(new Set(matches)).sort() : [];
+}
+
+function extractSenioritySet(tokens: string[]): Set<string> {
+  const set = new Set<string>();
+  for (const t of tokens) {
+    if (SENIORITY_TOKENS.has(t)) {
+      if (t === 'internship' || t === 'co-op' || t === 'coop') set.add('intern');
+      else set.add(t);
+    }
+  }
+  return set;
+}
+
+function levenshteinDistance(a: string, b: string, maxDist = 3): number {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > maxDist) return maxDist + 1;
+  const prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  const curr = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    let rowMin = curr[0];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+      if (curr[j] < rowMin) rowMin = curr[j];
+    }
+    if (rowMin > maxDist) return maxDist + 1;
+    for (let j = 0; j <= b.length; j++) prev[j] = curr[j];
+  }
+  return prev[b.length];
 }
 
 /**
@@ -337,18 +417,21 @@ export function buildDismissedPairKeysForCluster(jobIds: string[]): string[] {
   return pairs;
 }
 
-export type DuplicateMatchReason = 'Same role title & company';
+export type DuplicateMatchReason =
+  | 'Same role title & company'
+  | 'Similar role title at same company';
 
 /**
  * Pairwise comparison to determine whether two jobs represent the same role.
- * Strictly based on same normalized role title at the same normalized company
- * (including word-order-invariant exact token matches such as
- * "2027 Summer MBA Intern" vs "MBA Summer Intern 2027").
+ * Strictly requires the SAME normalized company (roles at different companies are
+ * NEVER treated as duplicates, even with identical titles), and allows slight fuzzy
+ * matching of role titles within the same company (guarded by year & seniority checks).
  */
 export function detectDuplicatePairReason(
   a: Pick<JobRecord, 'urlHash' | 'jobUrl' | 'company' | 'title'>,
   b: Pick<JobRecord, 'urlHash' | 'jobUrl' | 'company' | 'title'>
 ): DuplicateMatchReason | null {
+  // Hard invariant: roles at different companies are never duplicates
   const compA = normalizeCompanyKey(a.company);
   const compB = normalizeCompanyKey(b.company);
   if (!compA || !compB || compA !== compB) {
@@ -365,7 +448,7 @@ export function detectDuplicatePairReason(
     return 'Same role title & company';
   }
 
-  // Guard: Do not match if explicit years conflict (e.g. 2026 vs 2027)
+  // Guard 1: Do not match if explicit years conflict (e.g. 2026 vs 2027)
   const yearsA = extractYears(titleA);
   const yearsB = extractYears(titleB);
   if (yearsA.length > 0 && yearsB.length > 0 && yearsA.join(',') !== yearsB.join(',')) {
@@ -385,6 +468,40 @@ export function detectDuplicatePairReason(
     return 'Same role title & company';
   }
 
+  // Guard 2: Do not fuzzy-match if explicit seniority levels conflict
+  // (e.g. "Product Manager" vs "Senior Product Manager", or "Intern" vs "Director")
+  const senA = extractSenioritySet(tokensA);
+  const senB = extractSenioritySet(tokensB);
+  if (senA.size !== senB.size || [...senA].some((s) => !senB.has(s))) {
+    return null;
+  }
+
+  // Slight fuzzy match 1: Tiny character typo/edit on full normalized title (<= 2 edits for >= 10 chars)
+  if (Math.min(titleA.length, titleB.length) >= 10 && levenshteinDistance(titleA, titleB, 2) <= 2) {
+    return 'Similar role title at same company';
+  }
+
+  // Slight fuzzy match 2: High token overlap (Jaccard >= 0.72) or clean subset with <= 2 extra tokens
+  // (e.g. "Global Pharma Strategy Intern" vs "2027 MBA Summer Global Pharma Strategy Intern" or extra city tag)
+  const setA = new Set(tokensA);
+  const setB = new Set(tokensB);
+  let shared = 0;
+  for (const tok of setA) {
+    if (setB.has(tok)) shared += 1;
+  }
+  const unionSize = setA.size + setB.size - shared;
+  const jaccard = unionSize > 0 ? shared / unionSize : 0;
+
+  if (jaccard >= 0.72 && shared >= 2) {
+    return 'Similar role title at same company';
+  }
+
+  const minSize = Math.min(setA.size, setB.size);
+  const maxSize = Math.max(setA.size, setB.size);
+  if (shared === minSize && minSize >= 2 && maxSize - minSize <= 2) {
+    return 'Similar role title at same company';
+  }
+
   return null;
 }
 
@@ -392,8 +509,14 @@ export function findMatchingExistingJob(
   candidate: Pick<JobRecord, 'urlHash' | 'jobUrl' | 'company' | 'title'>,
   existingJobs: JobRecord[]
 ): JobRecord | undefined {
+  const candidateComp = normalizeCompanyKey(candidate.company);
   const candidateUrl = canonicalizeJobUrl(candidate.jobUrl);
   for (const existing of existingJobs) {
+    const existingComp = normalizeCompanyKey(existing.company);
+    // Hard invariant: never collapse two jobs with different known companies
+    if (candidateComp && existingComp && candidateComp !== existingComp) {
+      continue;
+    }
     if (detectDuplicatePairReason(candidate, existing)) {
       return existing;
     }
@@ -476,6 +599,7 @@ export function findDuplicateJobGroups(
       : new Set(Array.isArray(dismissedPairs) ? dismissedPairs : []);
 
   const parent = Array.from({ length: n }, (_, i) => i);
+  const groupReason = new Map<number, DuplicateMatchReason>();
 
   const find = (x: number): number => {
     while (parent[x] !== x) {
@@ -485,14 +609,24 @@ export function findDuplicateJobGroups(
     return x;
   };
 
-  const union = (a: number, b: number) => {
+  const union = (a: number, b: number, reason: DuplicateMatchReason) => {
     const ra = find(a);
     const rb = find(b);
     if (ra === rb) return;
     parent[rb] = ra;
+    const existing = groupReason.get(ra) ?? groupReason.get(rb);
+    // If any pair in the cluster is fuzzy, label as similar; otherwise exact
+    if (
+      existing === 'Similar role title at same company' ||
+      reason === 'Similar role title at same company'
+    ) {
+      groupReason.set(ra, 'Similar role title at same company');
+    } else {
+      groupReason.set(ra, reason);
+    }
   };
 
-  // Group strictly by same normalized company + same normalized role title
+  // Group strictly within the SAME normalized company (different companies are never compared)
   const byCompany = new Map<string, number[]>();
 
   for (let i = 0; i < n; i++) {
@@ -508,7 +642,7 @@ export function findDuplicateJobGroups(
       }
       const reason = detectDuplicatePairReason(prevJob, job);
       if (reason) {
-        union(prevIdx, i);
+        union(prevIdx, i, reason);
       }
     }
     list.push(i);
@@ -524,7 +658,7 @@ export function findDuplicateJobGroups(
   }
 
   const groups: DuplicateJobGroup[] = [];
-  for (const clusterJobs of clusters.values()) {
+  for (const [root, clusterJobs] of clusters.entries()) {
     if (clusterJobs.length < 2) continue;
 
     // Sort cluster so the strongest primary candidate is first
@@ -536,7 +670,7 @@ export function findDuplicateJobGroups(
 
     groups.push({
       groupId: `dup-${sorted[0].id}`,
-      reason: 'Same role title & company',
+      reason: groupReason.get(root) ?? 'Same role title & company',
       recommendedPrimaryId: sorted[0].id,
       jobs: sorted,
     });
