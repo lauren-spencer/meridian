@@ -43,6 +43,7 @@ const PRIORITY_LABEL: Record<string, string> = {
   high: 'High',
   medium: 'Medium',
   low: 'Low',
+  applied: 'Applied',
 };
 
 export function DeduplicateModal({

@@ -107,10 +107,10 @@ import {
   NetworkingContact,
   PipelineStage,
   PreferenceSynthesisResult,
+  ResumeReviewDocument,
   RoleResume,
   RuleSuggestion,
   ServerScheduleState,
-  TailoredResumeDocument,
   TargetCompany,
   ToastNotification,
   UserIntakeProfile,
@@ -492,11 +492,11 @@ export default function App() {
   const [coverLetterSamples, setCoverLetterSamples] = useState<CoverLetterSample[]>(
     initial.coverLetterSamples
   );
-  const [tailoredByJobId, setTailoredByJobId] = useState<
+  const [resumeReviewByJobId, setResumeReviewByJobId] = useState<
     Record<
       string,
       {
-        tailored: TailoredResumeDocument;
+        review: ResumeReviewDocument;
         docxBase64: string;
         fileName: string;
       }
@@ -1567,6 +1567,12 @@ export default function App() {
     const target = jobs.find((j) => j.id === jobId);
     if (!target) return;
     const nextIsNew = nextStage === 'inbox' ? target.isNew : false;
+    const shouldAutoApplyPriority =
+      nextStage === 'applied' || nextStage === 'interviewing' || nextStage === 'offer';
+    const nextPriority: JobPriority | undefined = shouldAutoApplyPriority
+      ? 'applied'
+      : target.priority;
+
     setJobs((prev) =>
       prev.map((j) =>
         j.id === jobId
@@ -1574,6 +1580,7 @@ export default function App() {
               ...j,
               stage: nextStage,
               isNew: nextIsNew,
+              priority: nextPriority,
             }
           : j
       )
@@ -1584,6 +1591,7 @@ export default function App() {
         isNew: nextIsNew,
         feedback: target.feedback,
         dislikeReason: target.dislikeReason,
+        ...(shouldAutoApplyPriority ? { priority: 'applied' as JobPriority } : {}),
       })
     );
   };
@@ -1856,16 +1864,18 @@ export default function App() {
     pushToast('Saved extended career context');
   };
 
-  const handleSaveTailoredResult = (
+  const handleSaveResumeReview = (
     jobId: string,
     result: {
-      tailored: TailoredResumeDocument;
+      review: ResumeReviewDocument;
       docxBase64: string;
       fileName: string;
     }
   ) => {
-    setTailoredByJobId((prev) => ({ ...prev, [jobId]: result }));
-    pushToast('Generated 1-page tailored resume (.docx with edits in red)');
+    setResumeReviewByJobId((prev) => ({ ...prev, [jobId]: result }));
+    pushToast(
+      `Added ${result.review.comments.length} review comments to your base resume`
+    );
   };
 
   const handleSaveCoverLetterResult = (
@@ -3828,14 +3838,25 @@ export default function App() {
         coverLetterSamples={coverLetterSamples}
         careerExperiences={intakeProfile.careerExperiences ?? []}
         careerContextNotes={intakeProfile.careerContextNotes ?? ''}
-        tailoredResult={selectedJob ? tailoredByJobId[selectedJob.id] ?? null : null}
+        resumeReviewResult={
+          selectedJob ? resumeReviewByJobId[selectedJob.id] ?? null : null
+        }
         coverLetterResult={
           selectedJob ? coverLetterByJobId[selectedJob.id] ?? null : null
         }
         onSaveResume={handleSaveResume}
         onSaveCoverLetterSample={handleSaveCoverLetterSample}
-        onOpenResumesView={() => setActiveView('resumes')}
-        onSaveTailoredResult={handleSaveTailoredResult}
+        onOpenResumesView={(focusSection?: 'context') => {
+          setActiveView('resumes');
+          if (focusSection === 'context') {
+            window.setTimeout(() => {
+              document
+                .getElementById('additional-career-context')
+                ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 80);
+          }
+        }}
+        onSaveResumeReview={handleSaveResumeReview}
         onSaveCoverLetterResult={handleSaveCoverLetterResult}
         onUpdateJobAttributes={handleUpdateJobAttributes}
         onUpdateJobDetails={handleUpdateJobDetails}

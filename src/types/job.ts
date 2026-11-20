@@ -10,7 +10,7 @@ export type LocationType = 'Remote' | 'Hybrid' | 'Onsite';
 
 export type EmploymentType = 'Full-time' | 'Internship' | 'Part-time' | 'Contract';
 
-export type JobPriority = 'asap' | 'high' | 'medium' | 'low';
+export type JobPriority = 'asap' | 'high' | 'medium' | 'low' | 'applied';
 
 export type AtsType =
   | 'Greenhouse'
@@ -79,41 +79,36 @@ export interface CareerExperienceItem {
   details: string;
 }
 
-export interface TailoredResumeDiffRun {
-  text: string;
-  edited: boolean;
+export type ResumeCommentCategory = 'move' | 'add' | 'remove' | 'missing';
+
+export interface ResumeReviewComment {
+  id: string;
+  category: ResumeCommentCategory;
+  /** 1-based line number in baseLines (null for document-wide / missing-section comments) */
+  anchorLineNumber: number | null;
+  /** Short verbatim excerpt from the base resume line that this comment targets */
+  anchorQuote: string;
+  /** Resume section heading or area (e.g., "Experience — Roche", "Skills", "Missing from Resume") */
+  sectionLabel: string;
+  /** Crisp headline of the recommendation */
+  title: string;
+  /** Specific feedback explaining what to move, add, remove, or what is missing based on the JD */
+  comment: string;
+  /** Optional concrete wording suggestion or off-resume item to draw from (never auto-applied) */
+  suggestedText?: string;
+  /** True when the suggestion draws from the user's non-resume skills/experience context */
+  fromExtendedContext?: boolean;
 }
 
-export interface TailoredResumeBullet {
-  runs: TailoredResumeDiffRun[];
-  sourceNote?: string;
-  wasPulledFromContext?: boolean;
-}
-
-export interface TailoredResumeEntry {
-  headerLeft: string;
-  headerRight: string;
-  subHeaderLeft: string;
-  subHeaderRight?: string;
-  bullets: TailoredResumeBullet[];
-}
-
-export interface TailoredResumeSection {
-  heading: string;
-  entries?: TailoredResumeEntry[];
-  summaryRuns?: TailoredResumeDiffRun[];
-}
-
-export interface TailoredResumeDocument {
+export interface ResumeReviewDocument {
   roleTypeUsed: string;
   baseResumeFileName: string;
-  candidateName: string;
-  contactLine: string;
-  headlineRuns?: TailoredResumeDiffRun[];
-  sections: TailoredResumeSection[];
-  changeSummary: string[];
-  pulledFromExtendedContext: string[];
-  estimatedLineCount: number;
+  /** Verbatim lines of the selected base resume (untouched) */
+  baseLines: string[];
+  overallFitNote: string;
+  comments: ResumeReviewComment[];
+  missingRequirements: string[];
+  usedExtendedContext: boolean;
   generatedAt: string;
 }
 

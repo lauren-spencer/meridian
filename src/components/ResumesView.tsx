@@ -109,6 +109,8 @@ export function ResumesView({
   // Brain dump notes
   const [notesDraft, setNotesDraft] = useState(careerContextNotes);
   const [notesSavedBanner, setNotesSavedBanner] = useState(false);
+  const [isUploadingContextDoc, setIsUploadingContextDoc] = useState(false);
+  const [contextUploadError, setContextUploadError] = useState<string | null>(null);
 
   const effectiveRoleType = (customRoleType.trim() || selectedRoleType).trim() || 'General';
   const effectiveClRoleType =
@@ -278,6 +280,34 @@ export function ResumesView({
     window.setTimeout(() => setNotesSavedBanner(false), 2500);
   };
 
+  const handleUploadContextDoc = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setContextUploadError(null);
+    setIsUploadingContextDoc(true);
+    try {
+      const extracted = await parseResumeFileOnServer(file);
+      const separator = notesDraft.trim() ? '\n\n---\n\n' : '';
+      const combined = `${notesDraft.trim()}${separator}[Uploaded: ${file.name}]\n${extracted}`.slice(
+        0,
+        15000
+      );
+      setNotesDraft(combined);
+      onSaveCareerContextNotes(combined);
+      setNotesSavedBanner(true);
+      window.setTimeout(() => setNotesSavedBanner(false), 2500);
+    } catch (err: unknown) {
+      setContextUploadError(
+        err instanceof Error
+          ? err.message
+          : 'Could not read that file. Try a .docx, .txt, .md, or .pdf document.'
+      );
+    } finally {
+      setIsUploadingContextDoc(false);
+    }
+  };
+
   return (
     <div className="space-y-8 max-w-5xl">
       {/* Page Header */}
@@ -286,7 +316,7 @@ export function ResumesView({
           Resumes, Cover Letters &amp; Career Context
         </h1>
         <p className="text-sm text-zinc-500 leading-relaxed max-w-3xl">
-          Upload one base resume and one writing sample cover letter per target role track, plus any off-resume career highlights. From any job&apos;s sidebar, Meridian generates redlined 1-page <span className="font-mono text-xs text-zinc-700">.docx</span> resumes and tailored cover letters in your own voice.
+          Upload one base resume and one writing sample cover letter per target role track, plus your non-resume skills and experience. From any job&apos;s sidebar, Meridian leaves anchored comments on your base resume (what to move, add, remove, or what&apos;s missing) as a commented <span className="font-mono text-xs text-zinc-700">.docx</span> and generates tailored cover letters in your own voice.
         </p>
       </div>
 
@@ -792,17 +822,20 @@ export function ResumesView({
         </div>
       </section>
 
-      {/* SECTION 3: Extended Career Context (Roles & Accomplishments Not On Resume) */}
-      <section className="bg-white border border-zinc-200 rounded-xl overflow-hidden">
+      {/* SECTION 3: Extended Career Context (Non-Resume Skills & Experience) */}
+      <section
+        id="additional-career-context"
+        className="bg-white border border-zinc-200 rounded-xl overflow-hidden scroll-mt-6"
+      >
         <div className="px-6 py-4 border-b border-zinc-200 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <BookOpen className="w-4 h-4 text-blue-600" />
             <div>
               <h2 className="text-sm font-semibold text-zinc-950">
-                All Roles &amp; Off-Resume Experience Bank
+                Non-Resume Skills, Roles &amp; Experience Bank
               </h2>
               <p className="text-xs text-zinc-500">
-                Add roles, earlier jobs, side projects, consulting engagements, or extra impact details that didn&apos;t fit on your 1-page resume. Meridian pulls from here whenever an off-resume detail makes you a stronger fit for a specific job.
+                Add or upload older jobs, side projects, technical tools, consulting work, or extra impact details not on your base resumes. Meridian uses this when commenting on your resume to recommend specific unlisted experience to add for each role.
               </p>
             </div>
           </div>
@@ -883,8 +916,8 @@ export function ResumesView({
             <div className="p-4 bg-zinc-50/70 border border-zinc-200 rounded-lg flex items-start gap-3">
               <Sparkles className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
               <div className="text-xs text-zinc-600 leading-relaxed">
-                <span className="font-semibold text-zinc-900">Why add off-resume roles?</span>{' '}
-                A 1-page resume leaves out most of your career. Adding older roles, internships, pro-bono consulting, technical side projects, or deeper metrics for your current roles lets Meridian swap in the exact proof points a hiring manager wants — highlighted in red so you can approve every change.
+                <span className="font-semibold text-zinc-900">Why add non-resume skills &amp; experience?</span>{' '}
+                A 1-page base resume leaves out a lot of your background. Adding older roles, internships, pro-bono consulting, technical skills, or deeper metrics lets Meridian leave much smarter review comments—telling you which exact unlisted proof points to add rather than only flagging gaps.
               </div>
             </div>
           ) : (
@@ -940,27 +973,49 @@ export function ResumesView({
             )
           )}
 
-          {/* Freeform Extended Career Brain Dump */}
+          {/* Freeform Extended Career Brain Dump + Document Upload */}
           <div className="pt-4 border-t border-zinc-100 space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <label
                   htmlFor="career-context-notes"
                   className="block text-xs font-semibold text-zinc-900"
                 >
-                  Additional Background, Metrics &amp; Unlisted Accomplishments
+                  Additional Skills, Background &amp; Unlisted Accomplishments
                 </label>
                 <p className="text-xs text-zinc-500">
-                  Freeform notes on tools, domains, awards, side projects, languages, or specific projects that didn&apos;t make your base resumes.
+                  Paste freeform notes—or upload a master resume / brag doc—covering tools, domains, awards, side projects, or metrics not on your base resumes.
                 </p>
               </div>
-              {notesSavedBanner && (
-                <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 shrink-0">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Saved</span>
-                </span>
-              )}
+              <div className="flex items-center gap-2 shrink-0">
+                <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-zinc-50 rounded-md cursor-pointer">
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>
+                    {isUploadingContextDoc ? 'Reading file...' : 'Upload Info Doc'}
+                  </span>
+                  <input
+                    type="file"
+                    accept=".docx,.txt,.md,.pdf"
+                    disabled={isUploadingContextDoc}
+                    onChange={(e) => void handleUploadContextDoc(e)}
+                    className="sr-only"
+                  />
+                </label>
+                {notesSavedBanner && (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Saved</span>
+                  </span>
+                )}
+              </div>
             </div>
+
+            {contextUploadError && (
+              <div className="p-2.5 bg-red-50 border border-red-200 rounded-md flex items-start gap-2 text-xs text-red-700">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{contextUploadError}</span>
+              </div>
+            )}
 
             <textarea
               id="career-context-notes"

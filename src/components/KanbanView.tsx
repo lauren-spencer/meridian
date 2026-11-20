@@ -8,7 +8,16 @@ const PRIORITY_RANK: Record<JobPriority, number> = {
   high: 3,
   medium: 2,
   low: 1,
+  applied: 0,
 };
+
+function getEffectivePriority(job: JobRecord): JobPriority | undefined {
+  if (job.priority) return job.priority;
+  if (job.stage === 'applied' || job.stage === 'interviewing' || job.stage === 'offer') {
+    return 'applied';
+  }
+  return undefined;
+}
 
 function prioritySelectClass(priority?: JobPriority): string {
   switch (priority) {
@@ -20,6 +29,8 @@ function prioritySelectClass(priority?: JobPriority): string {
       return 'text-amber-700 font-medium bg-amber-50/70 border-amber-200';
     case 'low':
       return 'text-blue-700 font-medium bg-blue-50/60 border-blue-200';
+    case 'applied':
+      return 'text-emerald-800 font-semibold bg-emerald-100/85 border-emerald-300';
     default:
       return 'text-zinc-400 bg-white border-zinc-200 hover:border-zinc-300 hover:text-zinc-600';
   }
@@ -257,7 +268,7 @@ export function KanbanView({
                         </div>
                         <select
                           aria-label={`Priority for ${job.title}`}
-                          value={job.priority ?? ''}
+                          value={getEffectivePriority(job) ?? ''}
                           onClick={(e) => e.stopPropagation()}
                           onChange={(e) => {
                             const val = e.target.value;
@@ -266,13 +277,14 @@ export function KanbanView({
                               val === 'asap' ||
                                 val === 'high' ||
                                 val === 'medium' ||
-                                val === 'low'
+                                val === 'low' ||
+                                val === 'applied'
                                 ? val
                                 : null
                             );
                           }}
                           className={`h-6 px-1.5 text-[10.5px] rounded border shrink-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-600/20 ${prioritySelectClass(
-                            job.priority
+                            getEffectivePriority(job)
                           )}`}
                         >
                           <option value="">Priority</option>
@@ -280,6 +292,7 @@ export function KanbanView({
                           <option value="medium">Medium</option>
                           <option value="high">High</option>
                           <option value="asap">ASAP</option>
+                          <option value="applied">Applied</option>
                         </select>
                       </div>
 

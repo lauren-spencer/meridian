@@ -142,7 +142,7 @@ service cloud.firestore {
     }
 
     function isValidPriority(val) {
-      return val in ['asap', 'high', 'medium', 'low'];
+      return val in ['asap', 'high', 'medium', 'low', 'applied'];
     }
 
     function isValidJob(data, userId, jobId) {
@@ -416,7 +416,7 @@ service cloud.firestore {
           incoming().updatedAt == request.time && (
             // Action 1: Triage & Pipeline stage update
             incoming().diff(existing()).affectedKeys().hasOnly([
-              'stage', 'isNew', 'feedback', 'dislikeReason', 'updatedAt'
+              'stage', 'isNew', 'feedback', 'dislikeReason', 'priority', 'updatedAt'
             ]) ||
             // Action 2: Notes edit
             incoming().diff(existing()).affectedKeys().hasOnly([

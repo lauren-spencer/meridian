@@ -25,9 +25,9 @@ import { scanGmailForJobs } from './src/lib/gmailScanner.ts';
 import { suggestColumnMappingWithGemini } from './src/lib/importMapper.ts';
 import { realtimeHub } from './src/lib/realtimeHub.ts';
 import {
-  buildTailoredResumeDocxBuffer,
+  buildCommentedResumeDocxBuffer,
   parseUploadedResume,
-  tailorResumeForJob,
+  reviewResumeForJob,
 } from './src/lib/resumeTailor.ts';
 import {
   buildSlackAuthUrl,
@@ -43,7 +43,6 @@ import type {
   JobRecord,
   JobSource,
   RoleResume,
-  TailoredResumeDocument,
   TargetCompany,
 } from './src/types/job.ts';
 
@@ -1221,8 +1220,8 @@ async function startServer() {
     }
   });
 
-  // Tailor a 1-page resume per job with edits in red + off-resume experience pulling
-  app.post('/api/resumes/tailor', async (req, res) => {
+  // Review a base resume against a job description and leave anchored comments (Move / Add / Remove / Missing)
+  app.post('/api/resumes/review', async (req, res) => {
     try {
       const {
         job,
@@ -1250,7 +1249,7 @@ async function startServer() {
         return;
       }
 
-      const tailored = await tailorResumeForJob({
+      const review = await reviewResumeForJob({
         job,
         baseResume,
         careerExperiences: Array.isArray(careerExperiences) ? careerExperiences : [],
@@ -1261,50 +1260,34 @@ async function startServer() {
         timeZone: typeof timeZone === 'string' ? timeZone : undefined,
       });
 
-      const redlinedBuffer = await buildTailoredResumeDocxBuffer(tailored, true);
+      const commentedBuffer = await buildCommentedResumeDocxBuffer(review, {
+        title: job.title,
+        company: job.company,
+      });
+      const safeBase = baseResume.fileName
+        .replace(/\.[^.]+$/, '')
+        .replace(/[^a-zA-Z0-9]+/g, '_')
+        .replace(/^_|_$/g, '')
+        .slice(0, 32);
       const safeCompany = job.company.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '');
-      const safeRole = job.title.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 36);
-      const fileName = `${tailored.candidateName.replace(/[^a-zA-Z0-9]+/g, '_')}_${safeCompany}_${safeRole}_Tailored.docx`;
+      const safeRole = job.title
+        .replace(/[^a-zA-Z0-9]+/g, '_')
+        .replace(/^_|_$/g, '')
+        .slice(0, 32);
+      const fileName = `${safeBase || 'Resume'}_${safeCompany}_${safeRole}_Comments.docx`;
 
       res.json({
-        tailored,
-        docxBase64: redlinedBuffer.toString('base64'),
+        review,
+        docxBase64: commentedBuffer.toString('base64'),
         fileName,
       });
     } catch (error: unknown) {
-      console.error('Error in POST /api/resumes/tailor:', error);
+      console.error('Error in POST /api/resumes/review:', error);
       const { statusCode, message } = formatGeminiApiError(
         error,
-        'Could not tailor resume for this job.'
+        'Could not generate resume review comments for this job.'
       );
       res.status(statusCode).json({ error: message });
-    }
-  });
-
-  // Export an already-tailored resume as redlined (edits in red) or clean (all black) 1-page .docx
-  app.post('/api/resumes/export-docx', async (req, res) => {
-    try {
-      const { tailored, highlightEditsInRed } = req.body as {
-        tailored?: TailoredResumeDocument;
-        highlightEditsInRed?: boolean;
-      };
-      if (!tailored || !Array.isArray(tailored.sections)) {
-        res.status(400).json({ error: 'Valid tailored resume payload is required.' });
-        return;
-      }
-      const buffer = await buildTailoredResumeDocxBuffer(
-        tailored,
-        highlightEditsInRed !== false
-      );
-      res.json({
-        docxBase64: buffer.toString('base64'),
-      });
-    } catch (error: unknown) {
-      console.error('Error in POST /api/resumes/export-docx:', error);
-      const errObj = error as { message?: string };
-      res.status(500).json({
-        error: errObj?.message || 'Could not export tailored .docx.',
-      });
     }
   });
 

@@ -37,7 +37,16 @@ const PRIORITY_RANK: Record<JobPriority, number> = {
   high: 3,
   medium: 2,
   low: 1,
+  applied: 0,
 };
+
+function getEffectivePriority(job: JobRecord): JobPriority | undefined {
+  if (job.priority) return job.priority;
+  if (job.stage === 'applied' || job.stage === 'interviewing' || job.stage === 'offer') {
+    return 'applied';
+  }
+  return undefined;
+}
 
 function prioritySelectClass(priority?: JobPriority): string {
   switch (priority) {
@@ -49,6 +58,8 @@ function prioritySelectClass(priority?: JobPriority): string {
       return 'text-amber-700 font-medium bg-amber-50/70 border-amber-200 hover:border-amber-300';
     case 'low':
       return 'text-blue-700 font-medium bg-blue-50/60 border-blue-200 hover:border-blue-300';
+    case 'applied':
+      return 'text-emerald-800 font-semibold bg-emerald-100/85 border-emerald-300 hover:border-emerald-400';
     default:
       return 'text-zinc-400 bg-white border-zinc-200 hover:border-zinc-300 hover:text-zinc-600';
   }
@@ -164,9 +175,10 @@ export function TableView({
           if (normalizedType !== employmentTypeFilter) return false;
         }
         if (priorityFilter !== 'all') {
+          const effPriority = getEffectivePriority(job);
           if (priorityFilter === 'none') {
-            if (job.priority) return false;
-          } else if (job.priority !== priorityFilter) {
+            if (effPriority) return false;
+          } else if (effPriority !== priorityFilter) {
             return false;
           }
         }
@@ -182,7 +194,7 @@ export function TableView({
           }
         }
         if (q) {
-          const haystack = `${job.title} ${job.company} ${job.location} ${job.employmentType || ''} ${job.priority || ''} ${job.skills.join(' ')} ${job.sourceName}`.toLowerCase();
+          const haystack = `${job.title} ${job.company} ${job.location} ${job.employmentType || ''} ${getEffectivePriority(job) || ''} ${job.skills.join(' ')} ${job.sourceName}`.toLowerCase();
           if (!haystack.includes(q)) return false;
         }
         return true;
@@ -194,8 +206,10 @@ export function TableView({
         }
         let cmp = 0;
         if (sortField === 'priority') {
-          const rankA = a.priority ? PRIORITY_RANK[a.priority] : 0;
-          const rankB = b.priority ? PRIORITY_RANK[b.priority] : 0;
+          const effA = getEffectivePriority(a);
+          const effB = getEffectivePriority(b);
+          const rankA = effA ? PRIORITY_RANK[effA] : -1;
+          const rankB = effB ? PRIORITY_RANK[effB] : -1;
           cmp = rankA - rankB;
           if (cmp === 0) cmp = a.matchScore - b.matchScore;
         } else if (sortField === 'matchScore') {
@@ -351,6 +365,7 @@ export function TableView({
             <option value="high">High priority</option>
             <option value="medium">Medium priority</option>
             <option value="low">Low priority</option>
+            <option value="applied">Applied</option>
             <option value="none">No priority</option>
           </select>
 
@@ -650,7 +665,7 @@ export function TableView({
                       >
                         <select
                           aria-label={`Priority for ${job.title} at ${job.company}`}
-                          value={job.priority ?? ''}
+                          value={getEffectivePriority(job) ?? ''}
                           onChange={(e) => {
                             const val = e.target.value;
                             onChangePriority(
@@ -658,13 +673,14 @@ export function TableView({
                               val === 'asap' ||
                                 val === 'high' ||
                                 val === 'medium' ||
-                                val === 'low'
+                                val === 'low' ||
+                                val === 'applied'
                                 ? val
                                 : null
                             );
                           }}
                           className={`h-7 px-2 text-[11.5px] rounded border transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-600/20 ${prioritySelectClass(
-                            job.priority
+                            getEffectivePriority(job)
                           )}`}
                         >
                           <option value="">—</option>
@@ -672,6 +688,7 @@ export function TableView({
                           <option value="medium">Medium</option>
                           <option value="high">High</option>
                           <option value="asap">ASAP</option>
+                          <option value="applied">Applied</option>
                         </select>
                       </td>
 

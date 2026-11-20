@@ -111,7 +111,7 @@ function validAts(a: unknown): AtsType {
   return VALID_ATS.includes(a as AtsType) ? (a as AtsType) : 'Custom Markdown';
 }
 
-const VALID_PRIORITIES: JobPriority[] = ['asap', 'high', 'medium', 'low'];
+const VALID_PRIORITIES: JobPriority[] = ['asap', 'high', 'medium', 'low', 'applied'];
 
 function validPriority(p: unknown): JobPriority | undefined {
   return VALID_PRIORITIES.includes(p as JobPriority) ? (p as JobPriority) : undefined;
@@ -689,18 +689,25 @@ export async function updateJobTriageInCloud(
     isNew: boolean;
     feedback: 'up' | 'down' | null;
     dislikeReason?: DislikeReason;
+    priority?: JobPriority | null;
   }
 ): Promise<void> {
   const id = safeId(jobId, 'job');
   const path = `users/${uid}/jobs/${id}`;
+  const payload: Record<string, unknown> = {
+    stage: validStage(patch.stage),
+    isNew: Boolean(patch.isNew),
+    feedback: patch.feedback === 'up' || patch.feedback === 'down' ? patch.feedback : 'none',
+    dislikeReason: patch.dislikeReason ? clampStr(patch.dislikeReason, 80) : null,
+    updatedAt: serverTimestamp(),
+  };
+  if (patch.priority === null) {
+    payload.priority = null;
+  } else if (patch.priority !== undefined && validPriority(patch.priority)) {
+    payload.priority = patch.priority;
+  }
   try {
-    await updateDoc(doc(db, 'users', uid, 'jobs', id), {
-      stage: validStage(patch.stage),
-      isNew: Boolean(patch.isNew),
-      feedback: patch.feedback === 'up' || patch.feedback === 'down' ? patch.feedback : 'none',
-      dislikeReason: patch.dislikeReason ? clampStr(patch.dislikeReason, 80) : null,
-      updatedAt: serverTimestamp(),
-    });
+    await updateDoc(doc(db, 'users', uid, 'jobs', id), payload);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }

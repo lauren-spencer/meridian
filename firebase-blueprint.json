@@ -191,7 +191,7 @@
         },
         "priority": {
           "type": "string",
-          "enum": ["asap", "high", "medium", "low"]
+          "enum": ["asap", "high", "medium", "low", "applied"]
         },
         "sourceId": {
           "type": "string",

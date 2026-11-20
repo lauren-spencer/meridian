@@ -147,6 +147,7 @@ const PRIORITY_RANK: Record<JobPriority, number> = {
   high: 3,
   medium: 2,
   low: 1,
+  applied: 0,
 };
 
 export function isPlaceholderOrEmptyJobUrl(rawUrl?: string | null): boolean {

@@ -10,9 +10,9 @@ import {
   Download,
   ExternalLink,
   FilePenLine,
-  FileText,
   Link2,
   Lock,
+  MessageSquareText,
   Pencil,
   Plus,
   RefreshCw,
@@ -53,8 +53,10 @@ import {
   NetworkingContactSentiment,
   NetworkingContactStatus,
   PipelineStage,
+  ResumeCommentCategory,
+  ResumeReviewComment,
+  ResumeReviewDocument,
   RoleResume,
-  TailoredResumeDocument,
 } from '../types/job';
 import { DislikeReasonPopover } from './DislikeReasonPopover';
 
@@ -93,8 +95,8 @@ interface JobDetailDrawerProps {
   coverLetterSamples: CoverLetterSample[];
   careerExperiences: CareerExperienceItem[];
   careerContextNotes: string;
-  tailoredResult?: {
-    tailored: TailoredResumeDocument;
+  resumeReviewResult?: {
+    review: ResumeReviewDocument;
     docxBase64: string;
     fileName: string;
   } | null;
@@ -105,11 +107,11 @@ interface JobDetailDrawerProps {
   } | null;
   onSaveResume: (resume: RoleResume) => void;
   onSaveCoverLetterSample: (sample: CoverLetterSample) => void;
-  onOpenResumesView: () => void;
-  onSaveTailoredResult: (
+  onOpenResumesView: (focusSection?: 'context') => void;
+  onSaveResumeReview: (
     jobId: string,
     result: {
-      tailored: TailoredResumeDocument;
+      review: ResumeReviewDocument;
       docxBase64: string;
       fileName: string;
     }
@@ -385,12 +387,12 @@ export function JobDetailDrawer({
   coverLetterSamples,
   careerExperiences,
   careerContextNotes,
-  tailoredResult,
+  resumeReviewResult,
   coverLetterResult,
   onSaveResume,
   onSaveCoverLetterSample,
   onOpenResumesView,
-  onSaveTailoredResult,
+  onSaveResumeReview,
   onSaveCoverLetterResult,
   onClose,
   onMoveStage,
@@ -442,14 +444,17 @@ export function JobDetailDrawer({
   const [jdDraft, setJdDraft] = useState('');
   const [isFetchingJd, setIsFetchingJd] = useState(false);
 
-  // Resume Tailor UI state
+  // Resume Review Comments UI state
   const [selectedResumeId, setSelectedResumeId] = useState<string>('');
-  const [tailorFocus, setTailorFocus] = useState('');
-  const [isTailoring, setIsTailoring] = useState(false);
-  const [isExportingClean, setIsExportingClean] = useState(false);
+  const [reviewFocus, setReviewFocus] = useState('');
+  const [isReviewingResume, setIsReviewingResume] = useState(false);
   const [isQuickUploadingResume, setIsQuickUploadingResume] = useState(false);
-  const [tailorError, setTailorError] = useState<string | null>(null);
-  const [showRedlinePreview, setShowRedlinePreview] = useState(true);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [commentCategoryFilter, setCommentCategoryFilter] = useState<
+    'all' | ResumeCommentCategory
+  >('all');
+  const [commentViewMode, setCommentViewMode] = useState<'comments' | 'annotated'>('comments');
+  const [copiedCommentId, setCopiedCommentId] = useState<string | null>(null);
 
   // Cover Letter Generator UI state
   const [selectedSampleId, setSelectedSampleId] = useState<string>('');
@@ -515,8 +520,10 @@ export function JobDetailDrawer({
       setLinkedInTone('intro');
       setLinkedInDrafts({});
       setLinkedInCopiedKey(null);
-      setTailorError(null);
-      setTailorFocus('');
+      setReviewError(null);
+      setReviewFocus('');
+      setCommentCategoryFilter('all');
+      setCopiedCommentId(null);
       setCoverLetterError(null);
       setCoverLetterFocus('');
       setCoverLetterCopied(false);
@@ -626,7 +633,12 @@ export function JobDetailDrawer({
     setEditLocationType(job.locationType);
     setEditEmploymentType(normalizedEmploymentType);
     setEditIsMbaRole(isMbaRole);
-    setEditPriority(job.priority ?? '');
+    setEditPriority(
+      job.priority ??
+        (job.stage === 'applied' || job.stage === 'interviewing' || job.stage === 'offer'
+          ? 'applied'
+          : '')
+    );
     setEditDeadlineAt(job.deadlineAt ?? '');
     setEditSkillsText(job.skills.join(', '));
     setEditSummary(job.summary || '');
@@ -787,7 +799,8 @@ export function JobDetailDrawer({
         editPriority === 'asap' ||
         editPriority === 'high' ||
         editPriority === 'medium' ||
-        editPriority === 'low'
+        editPriority === 'low' ||
+        editPriority === 'applied'
           ? editPriority
           : null,
       deadlineAt: editDeadlineAt.trim() || null,
@@ -996,14 +1009,14 @@ export function JobDetailDrawer({
     resumes.find((r) => r.id === selectedResumeId) ?? resumes[0] ?? null;
 
   const offResumeCount = careerExperiences.filter((e) => !e.onResume).length;
-  const hasExtendedContext =
-    careerExperiences.length > 0 || Boolean(careerContextNotes.trim());
+  const hasAdditionalNonResumeInfo =
+    offResumeCount > 0 || Boolean(careerContextNotes.trim());
 
   const handleQuickUploadResume = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    setTailorError(null);
+    setReviewError(null);
     setIsQuickUploadingResume(true);
     try {
       const rawText = await parseResumeFileOnServer(file);
@@ -1024,7 +1037,7 @@ export function JobDetailDrawer({
       onSaveResume(created);
       setSelectedResumeId(created.id);
     } catch (err: unknown) {
-      setTailorError(
+      setReviewError(
         err instanceof Error ? err.message : 'Could not parse uploaded resume.'
       );
     } finally {
@@ -1032,12 +1045,12 @@ export function JobDetailDrawer({
     }
   };
 
-  const handleTailorResume = async () => {
-    if (!activeBaseResume || isTailoring) return;
-    setTailorError(null);
-    setIsTailoring(true);
+  const handleReviewResume = async () => {
+    if (!activeBaseResume || isReviewingResume) return;
+    setReviewError(null);
+    setIsReviewingResume(true);
     try {
-      const res = await fetch('/api/resumes/tailor', {
+      const res = await fetch('/api/resumes/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1053,59 +1066,74 @@ export function JobDetailDrawer({
           baseResume: activeBaseResume,
           careerExperiences,
           careerContextNotes,
-          customInstructions: tailorFocus.trim() || undefined,
+          customInstructions: reviewFocus.trim() || undefined,
           timeZone: getClientTimeZone(),
         }),
       });
       const data = (await res.json()) as {
-        tailored?: TailoredResumeDocument;
+        review?: ResumeReviewDocument;
         docxBase64?: string;
         fileName?: string;
         error?: string;
       };
-      if (!res.ok || !data.tailored || !data.docxBase64) {
-        throw new Error(data.error || 'Failed to tailor resume.');
+      if (!res.ok || !data.review || !data.docxBase64) {
+        throw new Error(data.error || 'Failed to generate resume review comments.');
       }
-      onSaveTailoredResult(job.id, {
-        tailored: data.tailored,
+      onSaveResumeReview(job.id, {
+        review: data.review,
         docxBase64: data.docxBase64,
-        fileName: data.fileName || `${job.company}_Tailored_Resume.docx`,
+        fileName: data.fileName || `${job.company}_Resume_Comments.docx`,
       });
-      setShowRedlinePreview(true);
+      setCommentCategoryFilter('all');
     } catch (err: unknown) {
-      setTailorError(
-        err instanceof Error ? err.message : 'Could not tailor resume.'
+      setReviewError(
+        err instanceof Error ? err.message : 'Could not review base resume.'
       );
     } finally {
-      setIsTailoring(false);
+      setIsReviewingResume(false);
     }
   };
 
-  const handleDownloadCleanDocx = async () => {
-    if (!tailoredResult || isExportingClean) return;
-    setIsExportingClean(true);
+  const handleCopyReviewText = async (id: string, text: string) => {
     try {
-      const res = await fetch('/api/resumes/export-docx', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tailored: tailoredResult.tailored,
-          highlightEditsInRed: false,
-        }),
-      });
-      const data = (await res.json()) as { docxBase64?: string; error?: string };
-      if (!res.ok || !data.docxBase64) {
-        throw new Error(data.error || 'Failed to export clean .docx');
-      }
-      const cleanName = tailoredResult.fileName.replace(/\.docx$/i, '_Clean.docx');
-      downloadBase64Docx(data.docxBase64, cleanName);
-    } catch (err: unknown) {
-      setTailorError(
-        err instanceof Error ? err.message : 'Could not export clean .docx.'
-      );
-    } finally {
-      setIsExportingClean(false);
+      await navigator.clipboard.writeText(text);
+      setCopiedCommentId(id);
+      window.setTimeout(() => {
+        setCopiedCommentId((prev) => (prev === id ? null : prev));
+      }, 2000);
+    } catch {
+      // Ignore clipboard failures
     }
+  };
+
+  const handleCopyAllReviewComments = async () => {
+    if (!resumeReviewResult) return;
+    const rev = resumeReviewResult.review;
+    const formatted = [
+      `Resume Review Comments — ${job.title} @ ${job.company}`,
+      `Base Resume: ${rev.roleTypeUsed} (${rev.baseResumeFileName})`,
+      '',
+      `Overall Fit: ${rev.overallFitNote}`,
+      ...(rev.missingRequirements.length > 0
+        ? ['', `Key Gaps: ${rev.missingRequirements.join(' · ')}`]
+        : []),
+      '',
+      ...rev.comments.map((c) => {
+        const loc =
+          c.anchorLineNumber !== null
+            ? `Line ${c.anchorLineNumber} · ${c.sectionLabel}`
+            : c.sectionLabel;
+        return [
+          `[${c.category.toUpperCase()}] ${c.title} (${loc})`,
+          c.anchorQuote ? `  On: "${c.anchorQuote}"` : null,
+          `  Note: ${c.comment}`,
+          c.suggestedText ? `  Suggested idea: ${c.suggestedText}` : null,
+        ]
+          .filter(Boolean)
+          .join('\n');
+      }),
+    ].join('\n');
+    await handleCopyReviewText('all-comments', formatted);
   };
 
   const handleQuickUploadCoverLetterSample = async (
@@ -1382,7 +1410,14 @@ export function JobDetailDrawer({
                 <select
                   id="detail-priority"
                   aria-label="Role priority"
-                  value={job.priority ?? ''}
+                  value={
+                    job.priority ??
+                    (job.stage === 'applied' ||
+                    job.stage === 'interviewing' ||
+                    job.stage === 'offer'
+                      ? 'applied'
+                      : '')
+                  }
                   onChange={(e) => {
                     const val = e.target.value;
                     onUpdateJobAttributes(job.id, {
@@ -1390,7 +1425,8 @@ export function JobDetailDrawer({
                         val === 'asap' ||
                         val === 'high' ||
                         val === 'medium' ||
-                        val === 'low'
+                        val === 'low' ||
+                        val === 'applied'
                           ? val
                           : null,
                     });
@@ -1404,6 +1440,12 @@ export function JobDetailDrawer({
                       ? 'bg-amber-50/70 text-amber-700 border-amber-200'
                       : job.priority === 'low'
                       ? 'bg-blue-50/60 text-blue-700 border-blue-200'
+                      : job.priority === 'applied' ||
+                        (!job.priority &&
+                          (job.stage === 'applied' ||
+                            job.stage === 'interviewing' ||
+                            job.stage === 'offer'))
+                      ? 'bg-emerald-100/85 text-emerald-800 border-emerald-300 font-semibold'
                       : 'bg-white text-zinc-700 border-zinc-200'
                   }`}
                 >
@@ -1412,6 +1454,7 @@ export function JobDetailDrawer({
                   <option value="medium">Medium</option>
                   <option value="high">High</option>
                   <option value="asap">ASAP</option>
+                  <option value="applied">Applied</option>
                 </select>
               </div>
             </div>
@@ -1703,6 +1746,7 @@ export function JobDetailDrawer({
                     <option value="medium">Medium</option>
                     <option value="high">High</option>
                     <option value="asap">ASAP</option>
+                    <option value="applied">Applied</option>
                   </select>
                 </div>
 
@@ -1969,13 +2013,13 @@ export function JobDetailDrawer({
             </div>
           </div>
 
-          {/* 1-Page Resume Tailor (.docx with red edits) */}
+          {/* Resume Review Comments (.docx with native Word margin comments — no direct editing) */}
           <div className="pt-5 border-t border-zinc-100 space-y-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <FileText className="w-3.5 h-3.5 text-blue-600" />
+                <MessageSquareText className="w-3.5 h-3.5 text-blue-600" />
                 <h3 className="text-xs font-semibold text-zinc-900">
-                  Tailor 1-Page Resume (.docx)
+                  Resume Review Comments (.docx)
                 </h3>
               </div>
               <button
@@ -1990,10 +2034,38 @@ export function JobDetailDrawer({
               </button>
             </div>
 
+            {/* Prominent note when user has not yet added non-resume skills & experience */}
+            {!hasAdditionalNonResumeInfo && (
+              <div className="p-3 bg-amber-50/85 border border-amber-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <div className="flex items-start gap-2 min-w-0">
+                  <AlertCircle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                  <div className="text-xs text-amber-950 leading-relaxed">
+                    <span className="font-semibold">
+                      Add your non-resume skills &amp; experience for better comments.
+                    </span>{' '}
+                    <span className="text-amber-900/90">
+                      Upload a master doc or add off-resume roles, projects, and skills so the agent can suggest specific unlisted experience to bring in—not just flag what&apos;s missing.
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenResumesView('context');
+                  }}
+                  className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-[11.5px] font-medium text-amber-950 bg-white border border-amber-300 hover:bg-amber-100/70 rounded-md whitespace-nowrap cursor-pointer shrink-0"
+                >
+                  <Upload className="w-3 h-3" />
+                  <span>Add Additional Info</span>
+                </button>
+              </div>
+            )}
+
             {resumes.length === 0 ? (
               <div className="p-3.5 bg-zinc-50/80 border border-zinc-200 rounded-lg space-y-2.5">
                 <p className="text-xs text-zinc-600 leading-relaxed">
-                  Upload a role-specific base resume as a <span className="font-mono text-zinc-800">.docx</span> file (PDFs take longer to parse) to generate a tailored 1-page <span className="font-mono text-zinc-800">.docx</span> with edits highlighted in red.
+                  Upload a role-specific base resume (<span className="font-mono text-zinc-800">.docx</span> recommended). Instead of rewriting your resume, the agent leaves anchored review comments telling you what to move, add, remove, or what&apos;s missing for this role.
                 </p>
                 <div className="flex flex-wrap items-center gap-2">
                   <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-zinc-900 hover:bg-zinc-800 rounded-md cursor-pointer">
@@ -2015,11 +2087,11 @@ export function JobDetailDrawer({
                     type="button"
                     onClick={() => {
                       onClose();
-                      onOpenResumesView();
+                      onOpenResumesView('context');
                     }}
                     className="px-3 py-1.5 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-zinc-50 rounded-md cursor-pointer"
                   >
-                    Add Off-Resume Roles
+                    Add Non-Resume Skills &amp; Roles
                   </button>
                 </div>
               </div>
@@ -2030,7 +2102,7 @@ export function JobDetailDrawer({
                     htmlFor="drawer-resume-track"
                     className="sm:col-span-3 text-[11.5px] font-medium text-zinc-600"
                   >
-                    Base track
+                    Base resume
                   </label>
                   <select
                     id="drawer-resume-track"
@@ -2046,241 +2118,369 @@ export function JobDetailDrawer({
                   </select>
                 </div>
 
-                <div className="text-[11px] text-zinc-500">
-                  {hasExtendedContext ? (
-                    <span>
-                      Extended context active:{' '}
-                      <span className="text-zinc-800 font-medium">
-                        {careerExperiences.length} role{careerExperiences.length === 1 ? '' : 's'}
-                        {offResumeCount > 0 ? ` (${offResumeCount} off-resume)` : ''}
-                        {careerContextNotes.trim() ? ' + extra background notes' : ''}
-                      </span>
+                {hasAdditionalNonResumeInfo && (
+                  <div className="text-[11px] text-zinc-500">
+                    Non-resume context active:{' '}
+                    <span className="text-zinc-800 font-medium">
+                      {offResumeCount > 0
+                        ? `${offResumeCount} off-resume role${offResumeCount === 1 ? '' : 's'}`
+                        : ''}
+                      {offResumeCount > 0 && careerContextNotes.trim() ? ' + ' : ''}
+                      {careerContextNotes.trim() ? 'additional skills & background notes' : ''}
                     </span>
-                  ) : (
-                    <span>
-                      Tip: Add off-resume roles or projects in{' '}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onClose();
-                          onOpenResumesView();
-                        }}
-                        className="text-blue-600 hover:underline cursor-pointer"
-                      >
-                        Resumes &amp; Context
-                      </button>{' '}
-                      so Meridian can pull in unlisted achievements.
-                    </span>
-                  )}
-                </div>
+                  </div>
+                )}
 
                 <div className="flex flex-col sm:flex-row gap-2">
                   <input
                     type="text"
-                    value={tailorFocus}
-                    onChange={(e) => setTailorFocus(e.target.value)}
-                    placeholder="Optional focus (e.g., highlight B2B pricing & SQL analytics)"
+                    value={reviewFocus}
+                    onChange={(e) => setReviewFocus(e.target.value)}
+                    placeholder="Optional focus (e.g., highlight healthcare strategy, keep to 1 page)"
                     className="flex-1 h-8 px-2.5 text-xs bg-white border border-zinc-200 rounded-md text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-600"
                   />
                   <button
                     type="button"
-                    disabled={isTailoring}
-                    onClick={() => void handleTailorResume()}
+                    disabled={isReviewingResume}
+                    onClick={() => void handleReviewResume()}
                     className="inline-flex items-center justify-center gap-1.5 h-8 px-3 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 rounded-md whitespace-nowrap cursor-pointer disabled:cursor-wait shrink-0"
                   >
                     <Sparkles className="w-3.5 h-3.5" />
                     <span>
-                      {isTailoring
-                        ? 'Tailoring 1-Page .docx...'
-                        : tailoredResult
-                        ? 'Re-Tailor Resume'
-                        : 'Tailor for This Role'}
+                      {isReviewingResume
+                        ? 'Leaving Comments...'
+                        : resumeReviewResult
+                        ? 'Re-Review Resume'
+                        : 'Leave Review Comments'}
                     </span>
                   </button>
                 </div>
 
-                {tailorError && (
+                {reviewError && (
                   <div className="p-2.5 bg-red-50 border border-red-200 rounded-md flex items-start gap-2 text-xs text-red-700">
                     <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <span>{tailorError}</span>
+                    <span>{reviewError}</span>
                   </div>
                 )}
 
-                {tailoredResult && (
-                  <div className="pt-3 border-t border-zinc-200 space-y-3">
-                    {/* Download Actions */}
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="text-[11px] font-mono text-zinc-500">
-                        1-page fit · {tailoredResult.tailored.roleTypeUsed} ·{' '}
-                        {tailoredResult.tailored.generatedAt}
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            downloadBase64Docx(
-                              tailoredResult.docxBase64,
-                              tailoredResult.fileName
-                            )
-                          }
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-zinc-950 hover:bg-zinc-800 rounded-md cursor-pointer"
+                {resumeReviewResult &&
+                  (() => {
+                    const rev = resumeReviewResult.review;
+                    const counts: Record<ResumeCommentCategory, number> = {
+                      move: rev.comments.filter((c) => c.category === 'move').length,
+                      add: rev.comments.filter((c) => c.category === 'add').length,
+                      remove: rev.comments.filter((c) => c.category === 'remove').length,
+                      missing: rev.comments.filter((c) => c.category === 'missing').length,
+                    };
+                    const filteredComments =
+                      commentCategoryFilter === 'all'
+                        ? rev.comments
+                        : rev.comments.filter((c) => c.category === commentCategoryFilter);
+
+                    const categoryMeta: Record<
+                      ResumeCommentCategory,
+                      {
+                        label: string;
+                        badge: string;
+                        border: string;
+                        lineHighlight: string;
+                      }
+                    > = {
+                      move: {
+                        label: 'Move',
+                        badge: 'bg-blue-50 text-blue-800 border-blue-200',
+                        border: 'border-l-blue-500',
+                        lineHighlight: 'bg-blue-50/50 border-blue-200',
+                      },
+                      add: {
+                        label: 'Add',
+                        badge: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+                        border: 'border-l-emerald-500',
+                        lineHighlight: 'bg-emerald-50/50 border-emerald-200',
+                      },
+                      remove: {
+                        label: 'Remove',
+                        badge: 'bg-rose-50 text-rose-800 border-rose-200',
+                        border: 'border-l-rose-500',
+                        lineHighlight: 'bg-rose-50/50 border-rose-200',
+                      },
+                      missing: {
+                        label: 'Missing',
+                        badge: 'bg-amber-50 text-amber-800 border-amber-200',
+                        border: 'border-l-amber-500',
+                        lineHighlight: 'bg-amber-50/50 border-amber-200',
+                      },
+                    };
+
+                    const commentsByLine = new Map<number, ResumeReviewComment[]>();
+                    const generalComments: ResumeReviewComment[] = [];
+                    for (const c of filteredComments) {
+                      if (
+                        c.anchorLineNumber !== null &&
+                        c.anchorLineNumber >= 1 &&
+                        c.anchorLineNumber <= rev.baseLines.length
+                      ) {
+                        const existing = commentsByLine.get(c.anchorLineNumber) ?? [];
+                        existing.push(c);
+                        commentsByLine.set(c.anchorLineNumber, existing);
+                      } else {
+                        generalComments.push(c);
+                      }
+                    }
+
+                    const renderCommentCard = (
+                      c: ResumeReviewComment,
+                      compact = false
+                    ) => {
+                      const meta = categoryMeta[c.category];
+                      return (
+                        <div
+                          key={c.id}
+                          className={`bg-white border border-zinc-200 border-l-[3px] ${meta.border} rounded-md ${
+                            compact ? 'p-2.5' : 'p-3'
+                          } space-y-1.5`}
                         >
-                          <Download className="w-3.5 h-3.5" />
-                          <span>Download .docx (Edits in Red)</span>
-                        </button>
-                        <button
-                          type="button"
-                          disabled={isExportingClean}
-                          onClick={() => void handleDownloadCleanDocx()}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-zinc-50 rounded-md cursor-pointer disabled:cursor-wait"
-                        >
-                          <span>{isExportingClean ? 'Exporting...' : 'Clean .docx'}</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Change Summary & Off-Resume Pulls */}
-                    {tailoredResult.tailored.changeSummary.length > 0 && (
-                      <div className="text-xs space-y-1">
-                        <div className="font-semibold text-zinc-800">Key Edits Made</div>
-                        <ul className="list-disc pl-4 space-y-0.5 text-zinc-600">
-                          {tailoredResult.tailored.changeSummary.map((item, i) => (
-                            <li key={i}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {tailoredResult.tailored.pulledFromExtendedContext.length > 0 && (
-                      <div className="p-2.5 bg-red-50/50 border border-red-200/70 rounded-md text-xs space-y-1">
-                        <div className="font-semibold text-red-800">
-                          Pulled from Your Off-Resume Experience
-                        </div>
-                        <ul className="list-disc pl-4 space-y-0.5 text-red-700">
-                          {tailoredResult.tailored.pulledFromExtendedContext.map(
-                            (item, i) => (
-                              <li key={i}>{item}</li>
-                            )
-                          )}
-                        </ul>
-                      </div>
-                    )}
-
-                    {/* Collapsible 1-Page Redline Preview */}
-                    <div>
-                      <button
-                        type="button"
-                        onClick={() => setShowRedlinePreview((v) => !v)}
-                        className="inline-flex items-center gap-1 text-[11.5px] font-medium text-zinc-700 hover:text-zinc-950 cursor-pointer"
-                      >
-                        <span>
-                          {showRedlinePreview
-                            ? 'Hide Redline Preview'
-                            : 'Show Redline Preview'}
-                        </span>
-                        {showRedlinePreview ? (
-                          <ChevronUp className="w-3.5 h-3.5" />
-                        ) : (
-                          <ChevronDown className="w-3.5 h-3.5" />
-                        )}
-                      </button>
-
-                      {showRedlinePreview && (
-                        <div className="mt-2 p-4 bg-white border border-zinc-200 rounded-md shadow-2xs space-y-3 text-[11.5px] leading-snug text-zinc-900 max-h-96 overflow-y-auto">
-                          <div className="text-center border-b border-zinc-200 pb-2">
-                            <div className="text-sm font-bold text-zinc-950">
-                              {tailoredResult.tailored.candidateName}
+                          <div className="flex flex-wrap items-center justify-between gap-1.5">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span
+                                className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide border rounded ${meta.badge}`}
+                              >
+                                {meta.label}
+                              </span>
+                              <span className="text-[11px] font-mono text-zinc-500">
+                                {c.anchorLineNumber !== null
+                                  ? `Line ${c.anchorLineNumber}`
+                                  : 'Overall'}
+                                {c.sectionLabel ? ` · ${c.sectionLabel}` : ''}
+                              </span>
                             </div>
-                            {tailoredResult.tailored.contactLine && (
-                              <div className="text-[10.5px] text-zinc-500 mt-0.5">
-                                {tailoredResult.tailored.contactLine}
-                              </div>
+                            {c.fromExtendedContext && (
+                              <span className="text-[10.5px] font-medium text-emerald-700">
+                                From your non-resume info
+                              </span>
                             )}
                           </div>
 
-                          {tailoredResult.tailored.headlineRuns &&
-                            tailoredResult.tailored.headlineRuns.length > 0 && (
-                              <p>
-                                {tailoredResult.tailored.headlineRuns.map((run, idx) => (
-                                  <span
-                                    key={idx}
-                                    className={run.edited ? 'text-red-700 font-medium' : ''}
-                                  >
-                                    {run.text}
-                                  </span>
-                                ))}
-                              </p>
+                          <div className="text-xs font-semibold text-zinc-900">
+                            {c.title}
+                          </div>
+
+                          {!compact && c.anchorQuote && (
+                            <div className="text-[11px] text-zinc-500 bg-zinc-50 border border-zinc-200/80 rounded px-2 py-1 italic truncate">
+                              &ldquo;{c.anchorQuote}&rdquo;
+                            </div>
+                          )}
+
+                          <p className="text-xs text-zinc-700 leading-relaxed">
+                            {c.comment}
+                          </p>
+
+                          {c.suggestedText && (
+                            <div className="pt-1 flex items-start justify-between gap-2 bg-zinc-50 border border-zinc-200/80 rounded px-2.5 py-1.5">
+                              <div className="text-[11.5px] text-zinc-800 leading-relaxed">
+                                <span className="font-semibold text-zinc-600">
+                                  Suggested idea:{' '}
+                                </span>
+                                {c.suggestedText}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void handleCopyReviewText(c.id, c.suggestedText || '')
+                                }
+                                title="Copy suggested wording"
+                                className="p-1 text-zinc-400 hover:text-zinc-800 rounded cursor-pointer shrink-0"
+                              >
+                                {copiedCommentId === c.id ? (
+                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    };
+
+                    return (
+                      <div className="pt-3 border-t border-zinc-200 space-y-3">
+                        {/* Download & Copy Actions */}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-[11px] font-mono text-zinc-500">
+                            {rev.comments.length} comments · {rev.roleTypeUsed} ·{' '}
+                            {rev.generatedAt}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                downloadBase64Docx(
+                                  resumeReviewResult.docxBase64,
+                                  resumeReviewResult.fileName
+                                )
+                              }
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-zinc-950 hover:bg-zinc-800 rounded-md cursor-pointer"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              <span>Download Commented .docx</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleCopyAllReviewComments()}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 hover:bg-zinc-50 rounded-md cursor-pointer"
+                            >
+                              {copiedCommentId === 'all-comments' ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                  <span>Copied</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3.5 h-3.5" />
+                                  <span>Copy Comments</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Overall Fit & Missing Requirements */}
+                        <div className="p-3 bg-white border border-zinc-200 rounded-md space-y-2">
+                          <div className="text-xs text-zinc-800 leading-relaxed">
+                            <span className="font-semibold text-zinc-950">
+                              Overall Review:{' '}
+                            </span>
+                            {rev.overallFitNote}
+                          </div>
+                          {rev.missingRequirements.length > 0 && (
+                            <div className="text-[11.5px] text-amber-900 bg-amber-50/70 border border-amber-200/80 rounded px-2.5 py-1.5">
+                              <span className="font-semibold">
+                                Missing from base resume:{' '}
+                              </span>
+                              {rev.missingRequirements.join(' · ')}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Category Filters & View Switcher */}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-1">
+                            {(
+                              [
+                                ['all', `All (${rev.comments.length})`],
+                                ['move', `Move (${counts.move})`],
+                                ['add', `Add (${counts.add})`],
+                                ['remove', `Remove (${counts.remove})`],
+                                ['missing', `Missing (${counts.missing})`],
+                              ] as const
+                            ).map(([key, label]) => {
+                              const active = commentCategoryFilter === key;
+                              return (
+                                <button
+                                  key={key}
+                                  type="button"
+                                  onClick={() => setCommentCategoryFilter(key)}
+                                  className={`px-2 py-1 text-[11px] font-medium rounded border cursor-pointer transition-colors ${
+                                    active
+                                      ? 'bg-zinc-900 text-white border-zinc-900'
+                                      : 'bg-white text-zinc-600 border-zinc-200 hover:text-zinc-900 hover:bg-zinc-50'
+                                  }`}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <div className="inline-flex items-center bg-white border border-zinc-200 rounded-md p-0.5 text-[11px]">
+                            <button
+                              type="button"
+                              onClick={() => setCommentViewMode('comments')}
+                              className={`px-2 py-0.5 rounded font-medium cursor-pointer ${
+                                commentViewMode === 'comments'
+                                  ? 'bg-zinc-900 text-white'
+                                  : 'text-zinc-600 hover:text-zinc-900'
+                              }`}
+                            >
+                              Comments
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setCommentViewMode('annotated')}
+                              className={`px-2 py-0.5 rounded font-medium cursor-pointer ${
+                                commentViewMode === 'annotated'
+                                  ? 'bg-zinc-900 text-white'
+                                  : 'text-zinc-600 hover:text-zinc-900'
+                              }`}
+                            >
+                              On Base Resume
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Comments List OR Verbatim Annotated Base Resume */}
+                        {filteredComments.length === 0 ? (
+                          <div className="p-3 bg-white border border-zinc-200 rounded-md text-xs text-zinc-500">
+                            No {commentCategoryFilter} comments for this review.
+                          </div>
+                        ) : commentViewMode === 'comments' ? (
+                          <div className="space-y-2 max-h-96 overflow-y-auto pr-0.5">
+                            {filteredComments.map((c) => renderCommentCard(c, false))}
+                          </div>
+                        ) : (
+                          <div className="p-3.5 bg-white border border-zinc-200 rounded-md space-y-2.5 max-h-[28rem] overflow-y-auto">
+                            <div className="text-[11px] text-zinc-500 border-b border-zinc-100 pb-2">
+                              Showing your untouched base resume (<span className="font-mono text-zinc-700">{rev.baseResumeFileName}</span>) with review comments anchored inline.
+                            </div>
+
+                            {generalComments.length > 0 && (
+                              <div className="space-y-1.5 pb-2 border-b border-zinc-100">
+                                <div className="text-[10.5px] font-semibold uppercase tracking-wide text-zinc-500">
+                                  Document-Wide / Missing Notes
+                                </div>
+                                {generalComments.map((c) => renderCommentCard(c, true))}
+                              </div>
                             )}
 
-                          {tailoredResult.tailored.sections.map((section, sIdx) => (
-                            <div key={sIdx} className="space-y-1.5">
-                              <div className="text-[10.5px] font-bold tracking-wide text-zinc-900 border-b border-zinc-200 pb-0.5">
-                                {section.heading}
-                              </div>
-
-                              {section.summaryRuns && section.summaryRuns.length > 0 && (
-                                <p>
-                                  {section.summaryRuns.map((run, rIdx) => (
-                                    <span
-                                      key={rIdx}
-                                      className={run.edited ? 'text-red-700 font-medium' : ''}
+                            <div className="space-y-1">
+                              {rev.baseLines.map((line, idx) => {
+                                const lineNum = idx + 1;
+                                const attached = commentsByLine.get(lineNum) ?? [];
+                                const primaryMeta =
+                                  attached.length > 0
+                                    ? categoryMeta[attached[0].category]
+                                    : null;
+                                return (
+                                  <div key={lineNum} className="space-y-1.5">
+                                    <div
+                                      className={`flex items-start gap-2 px-2 py-1 rounded text-[11.5px] leading-snug ${
+                                        primaryMeta
+                                          ? `border ${primaryMeta.lineHighlight} text-zinc-950 font-medium`
+                                          : 'text-zinc-700'
+                                      }`}
                                     >
-                                      {run.text}
-                                    </span>
-                                  ))}
-                                </p>
-                              )}
-
-                              {(section.entries ?? []).map((entry, eIdx) => (
-                                <div key={eIdx} className="space-y-0.5 pt-0.5">
-                                  <div className="flex items-baseline justify-between gap-2 font-semibold text-zinc-950">
-                                    <span>{entry.headerLeft}</span>
-                                    <span className="text-[10.5px] font-normal text-zinc-600 shrink-0">
-                                      {entry.headerRight}
-                                    </span>
-                                  </div>
-                                  {(entry.subHeaderLeft || entry.subHeaderRight) && (
-                                    <div className="flex items-baseline justify-between gap-2 italic text-zinc-600">
-                                      <span>{entry.subHeaderLeft}</span>
-                                      {entry.subHeaderRight && (
-                                        <span className="text-[10.5px] shrink-0">
-                                          {entry.subHeaderRight}
-                                        </span>
-                                      )}
+                                      <span className="text-[10px] font-mono text-zinc-400 select-none w-6 shrink-0 pt-0.5 tabular-nums">
+                                        L{lineNum}
+                                      </span>
+                                      <span className="flex-1 whitespace-pre-wrap break-words">
+                                        {line}
+                                      </span>
                                     </div>
-                                  )}
-                                  {entry.bullets.length > 0 && (
-                                    <ul className="list-disc pl-4 space-y-0.5 pt-0.5">
-                                      {entry.bullets.map((b, bIdx) => (
-                                        <li key={bIdx}>
-                                          {b.runs.map((run, rIdx) => (
-                                            <span
-                                              key={rIdx}
-                                              className={
-                                                run.edited ? 'text-red-700 font-medium' : ''
-                                              }
-                                            >
-                                              {run.text}
-                                            </span>
-                                          ))}
-                                          {b.wasPulledFromContext && (
-                                            <span className="ml-1.5 text-[10px] font-mono text-red-600">
-                                              [from off-resume context]
-                                            </span>
-                                          )}
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  )}
-                                </div>
-                              ))}
+                                    {attached.length > 0 && (
+                                      <div className="pl-7 space-y-1.5 pb-1">
+                                        {attached.map((c) => renderCommentCard(c, true))}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
               </div>
             )}
           </div>
